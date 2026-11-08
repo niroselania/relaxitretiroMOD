@@ -5,7 +5,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0e1f1a">
   <title>{% block title %}Depósito{% endblock %} · Patagonia</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-2') }}">
 </head>
 <body>
 {% if session.get('user_id') %}
@@ -44,10 +44,6 @@
   const rail = document.getElementById('rail');
   const toggle = document.getElementById('rail-toggle');
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const store = {
-    get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
-  };
 
   /* menú: se expande/pliega y recuerda el estado (escritorio) */
   const setOpen = open => {
@@ -55,12 +51,10 @@
     toggle.setAttribute('aria-expanded', String(open));
     toggle.setAttribute('aria-label', open ? 'Plegar menú' : 'Expandir menú');
   };
-  setOpen(store.get('patagonia-rail') === 'open');
-  toggle.addEventListener('click', () => {
-    const open = !rail.classList.contains('rail-open');
-    setOpen(open);
-    store.set('patagonia-rail', open ? 'open' : 'closed');
-  });
+  /* el menú expandido se superpone al contenido (no lo reacomoda): se cierra al tocar fuera o con Esc */
+  toggle.addEventListener('click', e => { e.stopPropagation(); setOpen(!rail.classList.contains('rail-open')); });
+  document.addEventListener('click', e => { if (!rail.contains(e.target)) setOpen(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setOpen(false); });
 
   /* en celular, deja visible el ítem activo de la barra inferior */
   const active = rail.querySelector('.rail-link.active');
