@@ -14,7 +14,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
-- Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas.
+- Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas. Los resultados se cargan en segundo plano y el catálogo usa un índice para artículo/color.
 - Bot de Telegram para consultar talles y ubicaciones enviando `CÓDIGO COLOR` o `/buscar CÓDIGO COLOR`.
 - El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
 - Stock por contenedor, consulta y búsqueda por ubicación.

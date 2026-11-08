@@ -1,5 +1,100 @@
 {% extends 'base.html' %}{% block title %}Buscador de talles{% endblock %}{% block content %}
 <div class="page-heading"><div><div class="eyebrow">CONSULTA RÁPIDA DE INVENTARIO</div><h1>Buscador de talles</h1><p>Buscá por artículo y color para ver todos los talles, o por SKU para una prenda puntual.</p></div></div>
-<section class="panel form-panel"><div class="panel-heading"><div><h2>Buscar producto</h2><p>Ingresá el código de artículo (columna item) con color, o el SKU/código de barras completo sin color.</p></div><span class="step-badge">⌕</span></div><form method="get" class="size-finder-form"><label>Código del artículo o SKU<input name="codigo" value="{{ code }}" placeholder="Ej. 84628 o 0198077721550" required autofocus></label><label>Color <span class="muted">(solo para buscar todos los talles)</span><input name="color" value="{{ color }}" placeholder="Ej. BLK"></label><button class="button primary" type="submit">Buscar <span>→</span></button></form></section>
+<section class="panel form-panel"><div class="panel-heading"><div><h2>Buscar producto</h2><p>Ingresá el código de artículo (columna item) con color, o el SKU/código de barras completo sin color.</p></div><span class="step-badge">⌕</span></div><form method="get" action="{{ url_for('size_finder') }}" class="size-finder-form" id="size-finder-form"><label>Código del artículo o SKU<input name="codigo" value="{{ code }}" placeholder="Ej. 84628 o 0198077721550" required autofocus autocomplete="off"></label><label>Color <span class="muted">(solo para buscar todos los talles)</span><input name="color" value="{{ color }}" placeholder="Ej. BLK" autocomplete="off"></label><button class="button primary finder-button" type="submit"><span class="finder-button-label">⌕ Buscar</span><span class="finder-spinner" hidden></span></button></form><div class="finder-status" id="finder-status" role="status" aria-live="polite"></div></section>
+<div id="finder-results" aria-live="polite">
 {% if results %}<section class="panel"><div class="panel-heading"><div><h2>{{ results|length }} talle{% if results|length != 1 %}s{% endif %} encontrado{% if results|length != 1 %}s{% endif %}</h2><p>Artículo {{ results[0].item }} · {{ results[0].name }} · Color {{ results[0].color }}</p></div></div><div class="table-wrap"><table><thead><tr><th>TALLE</th><th>CÓDIGO DE BARRAS</th><th>UNIDADES EN UBICACIONES FÍSICAS</th><th>UBICACIÓN</th></tr></thead><tbody>{% for row in results %}<tr><td><strong class="finder-size">{{ row.size or 'Sin talle' }}</strong></td><td><code>{{ row.sku }}</code></td><td>{% if row.physical_units %}<span class="quantity-pill">{{ row.physical_units|qty }} u.</span>{% else %}<span class="muted">0 u.</span>{% endif %}</td><td class="finder-locations">{{ row.locations or 'Sin ubicación física' }}</td></tr>{% endfor %}</tbody></table></div></section>{% elif searched %}<section class="panel empty-state"><div class="empty-icon">⌕</div><h3>No encontramos resultados</h3><p>Si buscás un talle puntual, ingresá el SKU/código de barras completo. Para listar los talles del artículo, usá el valor de la columna <strong>item</strong> y completá el color.</p></section>{% else %}<section class="panel empty-state"><div class="empty-icon">◇</div><h3>Listo para buscar</h3><p>Usá artículo + color para listar talles, o el SKU de etiqueta para buscar una prenda puntual.</p></section>{% endif %}
+</div>
 {% endblock %}
+{% block scripts %}<script>
+(() => {
+  const form = document.getElementById('size-finder-form');
+  const resultsBox = document.getElementById('finder-results');
+  const status = document.getElementById('finder-status');
+  if (!form || !resultsBox) return;
+  const button = form.querySelector('.finder-button');
+  const buttonLabel = form.querySelector('.finder-button-label');
+  const spinner = form.querySelector('.finder-spinner');
+  let controller = null;
+  let requestNumber = 0;
+
+  const node = (tag, value, className) => {
+    const el = document.createElement(tag);
+    if (value !== undefined && value !== null) el.textContent = value;
+    if (className) el.className = className;
+    return el;
+  };
+  const showEmpty = (title, message) => {
+    const section = node('section', null, 'panel empty-state');
+    section.append(node('div', '⌕', 'empty-icon'), node('h3', title), node('p', message));
+    resultsBox.replaceChildren(section);
+  };
+  const showResults = results => {
+    if (!results.length) {
+      showEmpty('No encontramos resultados', 'Revisá el código del artículo y el color. Para una prenda puntual, ingresá su SKU/código de barras completo.');
+      return;
+    }
+    const section = node('section', null, 'panel');
+    const heading = node('div', null, 'panel-heading');
+    const headingText = node('div');
+    const first = results[0];
+    headingText.append(node('h2', `${results.length} talle${results.length === 1 ? '' : 's'} encontrado${results.length === 1 ? '' : 's'}`));
+    headingText.append(node('p', `Artículo ${first.item || '—'} · ${first.name} · Color ${first.color || '—'}`));
+    heading.append(headingText);
+    const wrap = node('div', null, 'table-wrap');
+    const table = node('table');
+    const thead = node('thead');
+    const headerRow = node('tr');
+    ['TALLE', 'CÓDIGO DE BARRAS', 'UNIDADES EN UBICACIONES FÍSICAS', 'UBICACIÓN'].forEach(text => headerRow.append(node('th', text)));
+    thead.append(headerRow);
+    const tbody = node('tbody');
+    results.forEach(row => {
+      const tr = node('tr');
+      const sizeCell = node('td'); sizeCell.append(node('strong', row.size || 'Sin talle', 'finder-size'));
+      const skuCell = node('td'); skuCell.append(node('code', row.sku));
+      const unitsCell = node('td'); unitsCell.append(node('span', `${Number(row.physical_units || 0).toLocaleString('es-AR')} u.`, row.physical_units ? 'quantity-pill' : 'muted'));
+      const locationCell = node('td', row.locations || 'Sin ubicación física', 'finder-locations');
+      tr.append(sizeCell, skuCell, unitsCell, locationCell);
+      tbody.append(tr);
+    });
+    table.append(thead, tbody); wrap.append(table); section.append(heading, wrap);
+    resultsBox.replaceChildren(section);
+  };
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    controller?.abort();
+    controller = new AbortController();
+    const current = ++requestNumber;
+    const params = new URLSearchParams(new FormData(form));
+    params.set('formato', 'json');
+    const cleanParams = new URLSearchParams(params);
+    cleanParams.delete('formato');
+    history.replaceState(null, '', `${form.action}?${cleanParams}`);
+    button.disabled = true;
+    spinner.hidden = false;
+    buttonLabel.textContent = 'Buscando…';
+    status.textContent = 'Buscando en el catálogo…';
+    resultsBox.setAttribute('aria-busy', 'true');
+    resultsBox.innerHTML = '<section class="panel finder-loading"><span class="finder-spinner"></span><span>Buscando productos y ubicaciones…</span></section>';
+    try {
+      const response = await fetch(`${form.action}?${params}`, {headers: {'Accept': 'application/json'}, signal: controller.signal});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (current !== requestNumber) return;
+      showResults(data.results || []);
+      status.textContent = `${(data.results || []).length} resultado${(data.results || []).length === 1 ? '' : 's'}`;
+    } catch (error) {
+      if (error.name === 'AbortError' || current !== requestNumber) return;
+      showEmpty('No se pudo completar la búsqueda', 'Revisá tu conexión y volvé a intentarlo.');
+      status.textContent = 'La búsqueda se interrumpió.';
+    } finally {
+      if (current === requestNumber) {
+        button.disabled = false;
+        spinner.hidden = true;
+        buttonLabel.textContent = '⌕ Buscar';
+        resultsBox.removeAttribute('aria-busy');
+      }
+    }
+  });
+})();
+</script>{% endblock %}

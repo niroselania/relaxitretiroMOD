@@ -10,7 +10,7 @@ from functools import wraps
 import barcode
 from barcode.writer import SVGWriter
 from flask import (Flask, abort, flash, g, make_response, redirect, render_template,
-                   request, send_file, session, url_for)
+                   request, send_file, session, url_for, jsonify)
 from openpyxl import Workbook, load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -103,6 +103,10 @@ def init_db():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    # Normalize the two fields used by the size finder so its composite index can serve searches.
+    db.execute("UPDATE products SET item=TRIM(item), color=UPPER(TRIM(color)) "
+               "WHERE item != TRIM(item) OR color != UPPER(TRIM(color))")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_products_finder ON products(item, color, active)")
     username = os.environ.get("ADMIN_USERNAME", "admin").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not app.config["SECRET_KEY"] or not password:
@@ -616,12 +620,12 @@ def products():
 @login_required
 def size_finder():
     code = request.args.get("codigo", "").strip()
-    color = request.args.get("color", "").strip()
+    color = request.args.get("color", "").strip().upper()
     rows = []
     searched = bool(request.args)
     if code:
         if color:
-            finder_condition = "((TRIM(p.item)=? AND UPPER(TRIM(p.color))=UPPER(?)) OR p.sku=?)"
+            finder_condition = "((p.item=? AND p.color=?) OR p.sku=?)"
             finder_params = (code, color, code)
         else:
             finder_condition = "p.sku=?"
@@ -641,6 +645,9 @@ def size_finder():
             WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
             WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
             p.size COLLATE NOCASE,p.sku""", finder_params).fetchall()
+    if request.args.get("formato") == "json":
+        return jsonify(results=[dict(row) for row in rows], searched=searched,
+                       code=code, color=color)
     return render_template("size_finder.html", results=rows, code=code, color=color, searched=searched)
 
 
@@ -682,7 +689,7 @@ def create_product():
     sku = request.form.get("sku", "").strip()
     name = request.form.get("name", "").strip()
     item = request.form.get("item", "").strip()
-    color = request.form.get("color", "").strip()
+    color = request.form.get("color", "").strip().upper()
     size = request.form.get("size", "").strip()
     description = request.form.get("description", "").strip()
     if not sku or not name:
@@ -845,7 +852,7 @@ def import_elementos_sheet(db, sheet):
         except (TypeError, ValueError):
             raise ValueError(f"La cantidad de unidades no es válida en la fila {row_number}.")
         total_units += units
-        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip(),
+        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip().upper(),
           str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
           str(row.get("ubicaciones") or "").strip()))
     with db:
@@ -922,7 +929,7 @@ def import_data():
                       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
                       name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
                       description=excluded.description,source_location=excluded.source_location,active=1""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
