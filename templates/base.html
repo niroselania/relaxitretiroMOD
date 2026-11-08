@@ -1,0 +1,106 @@
+{% macro ico(n) %}<svg viewBox="0 0 24 24" aria-hidden="true">{% if n == 'resumen' %}<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>{% endif %}{% if n == 'contenedores' %}<path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>{% endif %}{% if n == 'productos' %}<path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/>{% endif %}{% if n == 'talles' %}<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>{% endif %}{% if n == 'stock' %}<path d="M12 2L2 7l10 5 10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>{% endif %}{% if n == 'lector' %}<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M11 8v8M15 8v8M18 8v8"/>{% endif %}{% if n == 'movimientos' %}<path d="M17 3l4 4-4 4M21 7H9M7 21l-4-4 4-4M3 17h12"/>{% endif %}{% if n == 'usuarios' %}<path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>{% endif %}{% if n == 'importar' %}<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>{% endif %}{% if n == 'exportar' %}<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>{% endif %}</svg>{% endmacro %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e1f1a">
+  <title>{% block title %}Depósito{% endblock %} · Patagonia</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-1') }}">
+</head>
+<body>
+{% if session.get('user_id') %}
+<aside class="rail" id="rail" aria-label="Menú principal">
+  <a class="rail-logo" href="{{ url_for('dashboard') }}" aria-label="Inicio"><span class="brand-mark">//</span><span class="rail-brand">Patagonia<small>GESTIÓN DE DEPÓSITO</small></span></a>
+  <nav class="rail-nav">
+    <a class="rail-link {% if active_path == '/' %}active{% endif %}" href="{{ url_for('dashboard') }}" data-tip="Resumen">{{ ico('resumen') }}<span class="rail-text">Resumen</span></a>
+    <a class="rail-link {% if active_path.startswith('/contenedores') %}active{% endif %}" href="{{ url_for('containers') }}" data-tip="Contenedores">{{ ico('contenedores') }}<span class="rail-text">Contenedores</span></a>
+    <a class="rail-link {% if active_path.startswith('/productos') %}active{% endif %}" href="{{ url_for('products') }}" data-tip="Productos">{{ ico('productos') }}<span class="rail-text">Productos</span></a>
+    <a class="rail-link {% if active_path.startswith('/buscar-talles') %}active{% endif %}" href="{{ url_for('size_finder') }}" data-tip="Buscador de talles">{{ ico('talles') }}<span class="rail-text">Buscador de talles</span></a>
+    <a class="rail-link {% if active_path.startswith('/stock') %}active{% endif %}" href="{{ url_for('stock_view') }}" data-tip="Consultar stock">{{ ico('stock') }}<span class="rail-text">Consultar stock</span></a>
+    <a class="rail-link {% if active_path.startswith('/lector') %}active{% endif %}" href="{{ url_for('scan') }}" data-tip="Lector de barras">{{ ico('lector') }}<span class="rail-text">Lector de barras</span></a>
+    <a class="rail-link {% if active_path.startswith('/movimientos') %}active{% endif %}" href="{{ url_for('movements') }}" data-tip="Movimientos / PICK">{{ ico('movimientos') }}<span class="rail-text">Movimientos / PICK</span></a>
+    {% if current_role == 'admin' %}<a class="rail-link {% if active_path.startswith('/usuarios') %}active{% endif %}" href="{{ url_for('users_admin') }}" data-tip="Usuarios">{{ ico('usuarios') }}<span class="rail-text">Usuarios</span></a>{% endif %}
+    <hr class="rail-sep">
+    <a class="rail-link {% if active_path.startswith('/importar') %}active{% endif %}" href="{{ url_for('import_data') }}" data-tip="Importar Excel">{{ ico('importar') }}<span class="rail-text">Importar Excel</span></a>
+    <a data-noanim class="rail-link {% if active_path.startswith('/exportar') %}active{% endif %}" href="{{ url_for('export_data') }}" data-tip="Exportar Excel">{{ ico('exportar') }}<span class="rail-text">Exportar Excel</span></a>
+  </nav>
+  <div class="rail-foot">
+    <span class="rail-dot" title="Sistema listo"></span>
+    <button class="rail-toggle" type="button" id="rail-toggle" aria-label="Expandir menú" aria-expanded="false" title="Expandir / plegar menú"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+  </div>
+</aside>
+<div class="main-shell">
+  <header class="topbar"><div class="mobile-brand">Patagonia <small>DEPÓSITO</small></div><div class="topbar-spacer"></div><div class="user-chip"><span class="avatar">{{ session.get('username','U')[:1]|upper }}</span><span>{{ session.get('username') }} · {{ 'Admin' if current_role == 'admin' else 'Consulta' }}</span></div><a class="logout" href="{{ url_for('account') }}">Cuenta</a><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" type="submit">Salir</button></form></header>
+  <main class="page-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="flash-stack">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">Gestión de depósito <span>·</span> Patagonia</footer>
+</div>
+{% else %}{% block public_content %}{% endblock %}{% endif %}
+{% block scripts %}{% endblock %}
+{% if session.get('user_id') %}<script>
+(() => {
+  const rail = document.getElementById('rail');
+  const toggle = document.getElementById('rail-toggle');
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const store = {
+    get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  /* menú: se expande/pliega y recuerda el estado (escritorio) */
+  const setOpen = open => {
+    rail.classList.toggle('rail-open', open);
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? 'Plegar menú' : 'Expandir menú');
+  };
+  setOpen(store.get('patagonia-rail') === 'open');
+  toggle.addEventListener('click', () => {
+    const open = !rail.classList.contains('rail-open');
+    setOpen(open);
+    store.set('patagonia-rail', open ? 'open' : 'closed');
+  });
+
+  /* en celular, deja visible el ítem activo de la barra inferior */
+  const active = rail.querySelector('.rail-link.active');
+  if (active && window.matchMedia('(max-width: 760px)').matches) {
+    const nav = rail.querySelector('.rail-nav');
+    nav.scrollLeft = active.offsetLeft - nav.clientWidth / 2 + active.clientWidth / 2;
+  }
+
+  /* contadores animados */
+  const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  document.querySelectorAll('.stat-number').forEach(el => {
+    const target = parseInt(el.textContent.replace(/\./g, ''), 10);
+    if (isNaN(target) || reduce) return;
+    const t0 = performance.now(), dur = 1000;
+    el.textContent = '0';
+    const tick = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      el.textContent = fmt(Math.round(target * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+
+  /* transición suave entre pantallas */
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href]');
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (a.target && a.target !== '_self') return;
+    if (a.hasAttribute('download') || a.hasAttribute('data-noanim')) return;
+    const url = new URL(a.href, location.href);
+    if (url.origin !== location.origin) return;
+    if (url.pathname === location.pathname && url.search === location.search) return;
+    if (/^\/(exportar|importar\/plantilla)/.test(url.pathname) || /\/(imprimir|etiqueta)/.test(url.pathname)) return;
+    if (reduce) return;
+    e.preventDefault();
+    document.body.classList.add('leaving');
+    setTimeout(() => { location.href = a.href; }, 170);
+  });
+  window.addEventListener('pageshow', e => { if (e.persisted) document.body.classList.remove('leaving'); });
+})();
+</script>{% endif %}
+</body>
+</html>

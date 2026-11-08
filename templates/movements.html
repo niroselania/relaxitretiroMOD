@@ -1,0 +1,47 @@
+{% extends 'base.html' %}{% block title %}Movimientos{% endblock %}{% block content %}
+<div class="page-heading"><div><div class="eyebrow">TRAZABILIDAD · PICK</div><h1>Movimientos</h1><p>Escaneá origen, destino y todas las prendas del lote; confirmá cuando termines.</p></div></div>
+<section class="panel form-panel"><div class="panel-heading"><div><h2>Preparar traslado</h2><p>Los lectores de código funcionan como teclado: escanean el código y envían Enter.</p></div><span class="step-badge">⇄</span></div>
+{% if products and containers and session.get('role') == 'admin' %}<form method="post" class="pick-form" id="pick-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="mode" value="pick_batch"><input type="hidden" name="items" id="pick-items">
+<div class="pick-locations"><label>1 · Escanear etiqueta de ORIGEN<input id="origin-code" inputmode="numeric" placeholder="Código del contenedor" autocomplete="off" autofocus></label><label>Origen confirmado<select name="from_id" id="origin-select" required><option value="">Escaneá el origen</option><option value="legacy">Planilla importada sin ubicación</option>{% for c in containers %}<option value="{{ c.id }}">{{ c.name }} · {{ c.code }}</option>{% endfor %}{% if virtual_container %}<option value="{{ virtual_container.id }}">{{ virtual_container.name }} · {{ virtual_container.code }} (virtual)</option>{% endif %}</select></label><label>2 · Escanear etiqueta de DESTINO<input id="destination-code" inputmode="numeric" placeholder="Código del contenedor" autocomplete="off"></label><label>Destino confirmado<select name="to_id" id="destination-select" required><option value="">Escaneá el destino</option>{% for c in containers %}<option value="{{ c.id }}">{{ c.name }} · {{ c.code }}</option>{% endfor %}</select></label></div>
+<div class="pick-scan"><span class="scan-mark">▦</span><label>3 · Piquear prendas por código de etiqueta<input id="product-code" inputmode="numeric" placeholder="Escaneá el código del producto y presioná Enter" autocomplete="off" disabled></label><button class="button secondary" id="add-product" type="button" disabled>Agregar</button></div><div id="scan-feedback" class="pick-feedback" aria-live="polite">Primero escaneá el origen y el destino.</div>
+<div class="pick-cart"><div class="panel-heading"><div><h2>Prendas del lote</h2><p id="pick-count">0 unidades · 0 productos</p></div><button class="button secondary" id="clear-picks" type="button" disabled>Vaciar lista</button></div><div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>CÓDIGO ESCANEADO</th><th>CANTIDAD</th><th></th></tr></thead><tbody id="pick-list"><tr id="pick-empty"><td colspan="4" class="muted">Todavía no hay prendas escaneadas.</td></tr></tbody></table></div></div>
+<label class="pick-note">Nota del movimiento <span class="muted">(opcional)</span><input name="note" placeholder="Motivo o referencia para todo el lote"></label><div class="pick-submit"><span class="movement-hint">Podés escanear varias prendas; cada lectura suma una unidad. Revisá el origen y destino antes de confirmar.</span><button class="button primary" id="submit-pick" type="submit" disabled>Mover lote <span>→</span></button></div></form>
+{% else %}<div class="empty-inline">Necesitás al menos un producto y un contenedor para usar PICK.</div>{% endif %}</section>
+<section class="panel"><div class="panel-heading"><div><h2>Historial</h2><p>Últimos 100 movimientos.</p></div></div>{% if rows %}<div class="table-wrap"><table><thead><tr><th>FECHA</th><th>PRODUCTO</th><th>ORIGEN</th><th>DESTINO</th><th>CANTIDAD</th><th>NOTA</th></tr></thead><tbody>{% for row in rows %}<tr><td class="muted">{{ row.created_at|date_short }}</td><td><strong>{{ row.product }}</strong><small>{{ row.sku }}</small></td><td>{{ row.from_name or 'Ingreso externo' }}</td><td>{{ row.to_name or 'Salida externa' }}</td><td><span class="quantity-pill">{{ row.quantity|qty }} u.</span></td><td class="muted">{{ row.note or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-state compact"><div class="empty-icon">⇄</div><h3>Sin movimientos</h3><p>El historial se completa automáticamente cada vez que registrás un traslado.</p></div>{% endif %}</section>
+{% endblock %}
+{% block scripts %}<script>
+(() => {
+  const products = {{ product_index|tojson }};
+  const sourceContainers = {{ source_index|tojson }};
+  const destinationContainers = {{ destination_index|tojson }};
+  const form = document.getElementById('pick-form');
+  if (!form) return;
+  const originInput = document.getElementById('origin-code');
+  const destinationInput = document.getElementById('destination-code');
+  const originSelect = document.getElementById('origin-select');
+  const destinationSelect = document.getElementById('destination-select');
+  const productInput = document.getElementById('product-code');
+  const feedback = document.getElementById('scan-feedback');
+  const rows = new Map();
+  const show = (message, ok = true) => { feedback.textContent = message; feedback.className = `pick-feedback ${ok ? 'ok' : 'error'}`; };
+  const enableProductScan = () => { const ready = originSelect.value && destinationSelect.value && originSelect.value !== destinationSelect.value; productInput.disabled = !ready; document.getElementById('add-product').disabled = !ready; if (ready) { productInput.focus(); show('Origen y destino listos. Ya podés piquear prendas.'); } else if (originSelect.value && destinationSelect.value) show('El origen y el destino tienen que ser distintos.', false); };
+  const scanContainer = (input, select, index, next) => input.addEventListener('keydown', event => { if (event.key !== 'Enter') return; event.preventDefault(); const item = index[input.value.trim()]; if (!item) { show('No encontramos ese código de contenedor. Probá de nuevo.', false); input.select(); return; } select.value = String(item.id); show(`${item.name} · ${item.code} seleccionado.`); input.value = ''; if (next) next.focus(); enableProductScan(); });
+  scanContainer(originInput, originSelect, sourceContainers, destinationInput);
+  scanContainer(destinationInput, destinationSelect, destinationContainers, productInput);
+  originSelect.addEventListener('change', enableProductScan); destinationSelect.addEventListener('change', enableProductScan);
+  const render = () => {
+    const body = document.getElementById('pick-list'); body.replaceChildren(); let total = 0;
+    if (!rows.size) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 4; td.className = 'muted'; td.textContent = 'Todavía no hay prendas escaneadas.'; tr.append(td); body.append(tr); }
+    rows.forEach((item, id) => { total += item.quantity; const tr = document.createElement('tr'); for (const value of [item.name, item.sku, `${item.quantity} u.`]) { const td = document.createElement('td'); td.textContent = value; tr.append(td); } const action = document.createElement('td'); const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'table-action'; remove.textContent = 'Quitar'; remove.addEventListener('click', () => { rows.delete(id); render(); }); action.append(remove); tr.append(action); body.append(tr); });
+    document.getElementById('pick-count').textContent = `${total} unidades · ${rows.size} productos`;
+    document.getElementById('pick-items').value = JSON.stringify([...rows].map(([product_id, item]) => ({product_id, quantity:item.quantity})));
+    document.getElementById('submit-pick').disabled = !rows.size || !originSelect.value || !destinationSelect.value || originSelect.value === destinationSelect.value;
+    document.getElementById('clear-picks').disabled = !rows.size;
+  };
+  const addScannedProduct = () => { const code = productInput.value.trim(); if (!code) return; const item = products[code]; if (!item) { show(`No encontramos un producto con el código ${code}.`, false); productInput.select(); return; } const old = rows.get(item.id); rows.set(item.id, {...item, quantity: (old?.quantity || 0) + 1}); productInput.value = ''; show(`${item.name} agregado · ${item.sku}. Podés seguir escaneando.`); render(); productInput.focus(); };
+  productInput.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addScannedProduct(); } });
+  document.getElementById('add-product').addEventListener('click', addScannedProduct);
+  document.getElementById('clear-picks').addEventListener('click', () => { if (confirm('¿Vaciar todas las prendas escaneadas de este lote?')) { rows.clear(); render(); productInput.focus(); } });
+  form.addEventListener('submit', event => { if (!rows.size || !originSelect.value || !destinationSelect.value || originSelect.value === destinationSelect.value) { event.preventDefault(); show('Revisá que haya prendas, origen y destino distintos.', false); return; } if (!confirm(`¿Confirmar el movimiento de ${[...rows.values()].reduce((n, item) => n + item.quantity, 0)} unidades desde el origen seleccionado hasta el destino?`)) event.preventDefault(); });
+})();
+</script>{% endblock %}
