@@ -13,7 +13,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Edición de nombre y ubicación, cambio de depósito para un contenedor principal y movimiento de contenedores dentro de otros; el cambio de depósito se propaga a las cajas hijas.
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
-- Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
+- Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. Muestra 100 productos por página para mantener ágil la navegación; el listado permite ver Bariloche, Retiro o ambos y no incluye Centro de Distribución.
 - Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas. Los resultados se cargan en segundo plano y el catálogo usa un índice para artículo/color.
 - Bot de Telegram para consultar talles y ubicaciones enviando `CÓDIGO COLOR` o `/buscar CÓDIGO COLOR`.
 - El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
@@ -33,7 +33,7 @@ El importador admite la planilla original de productos con una hoja `elementos` 
 Copiá la carpeta `deposito-stock` a un equipo con acceso al Docker Engine del servidor. Desde esa carpeta, construí la imagen:
 
 ```sh
-docker build -t deposito-stock:1.1 .
+docker build -t deposito-stock:1.2 .
 ```
 
 Si el comando se ejecuta desde otro equipo, ese mismo Docker Engine debe ser el del servidor o la imagen tiene que publicarse en un registry accesible por Portainer.

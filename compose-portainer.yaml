@@ -1,6 +1,6 @@
 services:
   deposito:
-    image: deposito-stock:1.1
+    image: deposito-stock:1.2
     container_name: deposito-stock
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
     volumes:
       - deposito_data:/data
   telegram-bot:
-    image: deposito-stock:1.1
+    image: deposito-stock:1.2
     container_name: deposito-stock-telegram
     command: ["python", "telegram_bot.py"]
     restart: unless-stopped
