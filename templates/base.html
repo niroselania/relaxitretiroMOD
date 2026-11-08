@@ -5,11 +5,11 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0e1f1a">
   <title>{% block title %}Depósito{% endblock %} · Patagonia</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-4') }}">
 </head>
 <body>
 {% if session.get('user_id') %}
-<aside class="rail" id="rail" aria-label="Menú principal">
+<aside class="rail rail-open" id="rail" aria-label="Menú principal">
   <a class="rail-logo" href="{{ url_for('dashboard') }}" aria-label="Inicio"><span class="brand-mark">//</span><span class="rail-brand">Patagonia<small>GESTIÓN DE DEPÓSITO</small></span></a>
   <nav class="rail-nav">
     <a class="rail-link {% if active_path == '/' %}active{% endif %}" href="{{ url_for('dashboard') }}" data-tip="Resumen">{{ ico('resumen') }}<span class="rail-text">Resumen</span></a>
@@ -26,7 +26,6 @@
   </nav>
   <div class="rail-foot">
     <span class="rail-dot" title="Sistema listo"></span>
-    <button class="rail-toggle" type="button" id="rail-toggle" aria-label="Expandir menú" aria-expanded="false" title="Expandir / plegar menú"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
   </div>
 </aside>
 <div class="main-shell">
@@ -42,19 +41,7 @@
 {% if session.get('user_id') %}<script>
 (() => {
   const rail = document.getElementById('rail');
-  const toggle = document.getElementById('rail-toggle');
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  /* menú: se expande/pliega y recuerda el estado (escritorio) */
-  const setOpen = open => {
-    rail.classList.toggle('rail-open', open);
-    toggle.setAttribute('aria-expanded', String(open));
-    toggle.setAttribute('aria-label', open ? 'Plegar menú' : 'Expandir menú');
-  };
-  /* el menú expandido se superpone al contenido (no lo reacomoda): se cierra al tocar fuera o con Esc */
-  toggle.addEventListener('click', e => { e.stopPropagation(); setOpen(!rail.classList.contains('rail-open')); });
-  document.addEventListener('click', e => { if (!rail.contains(e.target)) setOpen(false); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') setOpen(false); });
 
   /* en celular, deja visible el ítem activo de la barra inferior */
   const active = rail.querySelector('.rail-link.active');
