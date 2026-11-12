@@ -194,3 +194,6 @@ label{color:#4d6159}
 .garment-copies{width:80px}
 #garment-print-form input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--green,#137a67);cursor:pointer}
 @media (max-width:860px){.garment-search-form{grid-template-columns:1fr}.garment-search-form .button{width:100%}}
+
+.rail-wordmark{display:block;height:22px;width:auto;max-width:130px}
+.rail-brand small{margin-top:5px}

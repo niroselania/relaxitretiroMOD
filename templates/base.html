@@ -5,12 +5,12 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0e1f1a">
   <title>{% block title %}Depósito{% endblock %} · Patagonia</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-6') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='v22-7') }}">
 </head>
 <body>
 {% if session.get('user_id') %}
 <aside class="rail rail-open" id="rail" aria-label="Menú principal">
-  <a class="rail-logo" href="{{ url_for('dashboard') }}" aria-label="Inicio"><span class="brand-mark">//</span><span class="rail-brand">Patagonia<small>GESTIÓN DE DEPÓSITO</small></span></a>
+  <a class="rail-logo" href="{{ url_for('dashboard') }}" aria-label="Inicio"><span class="brand-mark">//</span><span class="rail-brand"><img class="rail-wordmark" src="{{ url_for('static', filename='patagonia-logo.png') }}" alt="Patagonia"><small>GESTIÓN DE DEPÓSITO</small></span></a>
   <nav class="rail-nav">
     <a class="rail-link {% if active_path == '/' %}active{% endif %}" href="{{ url_for('dashboard') }}" data-tip="Resumen">{{ ico('resumen') }}<span class="rail-text">Resumen</span></a>
     <a class="rail-link {% if active_path.startswith('/contenedores') %}active{% endif %}" href="{{ url_for('containers') }}" data-tip="Contenedores">{{ ico('contenedores') }}<span class="rail-text">Contenedores</span></a>
