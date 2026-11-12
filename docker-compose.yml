@@ -1,6 +1,6 @@
 services:
   deposito:
-    image: deposito-stock:1.2
+    image: deposito-stock:1.0
     build: .
     container_name: deposito-stock
     restart: unless-stopped
@@ -15,7 +15,7 @@ services:
     volumes:
       - deposito_data:/data
   telegram-bot:
-    image: deposito-stock:1.2
+    image: deposito-stock:1.0
     build: .
     command: ["python", "telegram_bot.py"]
     restart: unless-stopped

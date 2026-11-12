@@ -1,0 +1,31 @@
+{% extends 'base.html' %}{% block title %}Etiquetas de prendas{% endblock %}{% block content %}
+<div class="page-heading"><div><div class="eyebrow">IMPRESIÓN · ETIQUETAS DE PRENDA</div><h1>Etiquetas de prendas</h1><p>Imprimí la etiqueta de la prenda con código, color, talle y código de barras.</p></div></div>
+<section class="panel form-panel"><div class="panel-heading"><div><h2>Buscar prenda</h2><p>Ingresá el código de artículo (columna item) para ver todos sus talles, o el SKU/código de barras de una prenda puntual. El color es opcional.</p></div><span class="step-badge">▭</span></div>
+<form method="get" class="garment-search-form"><label>Código del artículo o SKU<input name="codigo" value="{{ code }}" placeholder="Ej. 84628 o 0198077721550" required autofocus></label><label>Color (opcional)<input name="color" value="{{ color }}" placeholder="Ej. BLK"></label><label>Tamaño de etiqueta<select name="formato">{% for key, f in formats.items() %}<option value="{{ key }}" {% if key == label_format %}selected{% endif %}>{{ f.name }}</option>{% endfor %}</select></label><button class="button primary" type="submit">Buscar <span>→</span></button></form></section>
+{% if results %}
+<section class="panel"><form method="get" action="{{ url_for('print_garment_labels') }}" target="_blank" id="garment-print-form">
+<input type="hidden" name="formato" value="{{ label_format }}">
+<div class="panel-heading garment-actions"><div><h2>{{ results|length }} prenda{% if results|length != 1 %}s{% endif %} encontrada{% if results|length != 1 %}s{% endif %}</h2><p>Marcá las prendas e indicá cuántas etiquetas necesitás de cada una. Formato: {{ formats[label_format].name }}.</p></div>
+<div class="garment-bulk"><label>Copias para todas<input type="number" min="1" max="1000" value="1" id="bulk-copies"></label><button class="button secondary" type="button" id="apply-copies">Aplicar</button><button class="button primary" type="submit">Imprimir etiquetas <span>→</span></button></div></div>
+<div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" checked aria-label="Seleccionar todas"></th><th>CÓDIGO</th><th>COLOR</th><th>TALLE</th><th>CÓDIGO DE BARRAS</th><th>COPIAS</th></tr></thead><tbody>
+{% for p in results %}<tr><td><input type="checkbox" class="garment-check" name="p" value="{{ p.id }}" checked aria-label="Imprimir {{ p.sku }}"></td><td><strong>{{ p.item or '—' }}</strong></td><td>{{ p.color or '—' }}</td><td><strong class="finder-size">{{ p.size or '—' }}</strong></td><td><code>{{ p.sku }}</code></td><td><input class="garment-copies" type="number" name="q{{ p.id }}" min="1" max="1000" value="1"></td></tr>{% endfor %}
+</tbody></table></div></form></section>
+{% elif searched %}<section class="panel empty-state"><div class="empty-icon">▭</div><h3>No encontramos prendas</h3><p>Revisá el código de artículo (columna <strong>item</strong>) o ingresá el SKU/código de barras completo.</p></section>
+{% else %}<section class="panel empty-state"><div class="empty-icon">▭</div><h3>Listo para imprimir</h3><p>Buscá un artículo para elegir los talles y la cantidad de etiquetas.</p></section>{% endif %}
+{% endblock %}
+{% block scripts %}<script>
+(() => {
+  const all = document.getElementById('select-all');
+  if (!all) return;
+  const checks = [...document.querySelectorAll('.garment-check')];
+  all.addEventListener('change', () => checks.forEach(c => c.checked = all.checked));
+  checks.forEach(c => c.addEventListener('change', () => all.checked = checks.every(x => x.checked)));
+  document.getElementById('apply-copies').addEventListener('click', () => {
+    const v = document.getElementById('bulk-copies').value || 1;
+    document.querySelectorAll('.garment-copies').forEach(i => i.value = v);
+  });
+  document.getElementById('garment-print-form').addEventListener('submit', e => {
+    if (!checks.some(c => c.checked)) { e.preventDefault(); alert('Seleccioná al menos una prenda.'); }
+  });
+})();
+</script>{% endblock %}

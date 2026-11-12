@@ -4,13 +4,14 @@ import json
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 
 import barcode
 from barcode.writer import SVGWriter
+from markupsafe import Markup, escape
 from flask import (Flask, abort, flash, g, make_response, redirect, render_template,
-                   request, send_file, session, url_for, jsonify)
+                   request, send_file, session, url_for)
 from openpyxl import Workbook, load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -103,10 +104,6 @@ def init_db():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-    # Normalize the two fields used by the size finder so its composite index can serve searches.
-    db.execute("UPDATE products SET item=TRIM(item), color=UPPER(TRIM(color)) "
-               "WHERE item != TRIM(item) OR color != UPPER(TRIM(color))")
-    db.execute("CREATE INDEX IF NOT EXISTS idx_products_finder ON products(item, color, active)")
     username = os.environ.get("ADMIN_USERNAME", "admin").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not app.config["SECRET_KEY"] or not password:
@@ -297,25 +294,7 @@ def dashboard():
       LEFT JOIN containers f ON f.id=m.from_container_id
       LEFT JOIN containers t ON t.id=m.to_container_id
       ORDER BY m.id DESC LIMIT 8""").fetchall()
-    week_rows = {
-        row[0]: row[1]
-        for row in db.execute(
-            "SELECT date(created_at), COUNT(*) FROM movements "
-            "WHERE date(created_at) >= date('now','localtime','-6 days') GROUP BY 1"
-        )
-    }
-    today = datetime.now().astimezone().date()
-    labels = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-    week = []
-    peak = 1
-    for offset in range(6, -1, -1):
-        day = today - timedelta(days=offset)
-        count = int(week_rows.get(day.isoformat(), 0) or 0)
-        peak = max(peak, count)
-        week.append({"label": labels[day.weekday()], "count": count})
-    for item in week:
-        item["pct"] = round(100 * item["count"] / peak) if peak else 0
-    return render_template("dashboard.html", stats=stats, recent=recent, week=week)
+    return render_template("dashboard.html", stats=stats, recent=recent)
 
 
 def next_container_code(db):
@@ -578,10 +557,6 @@ def products():
         sites = ["Bariloche", "Retiro"]
     db = get_db()
     archived = request.args.get("archivados") == "1"
-    page_size = 100
-    page = max(1, request.args.get("page", 1, type=int))
-    offset = (page - 1) * page_size
-    prefetched_has_next = None
     if archived:
         rows = db.execute("""SELECT p.*,p.legacy_units+COALESCE(SUM(s.quantity),0) units,
           COALESCE(GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · '),p.source_location,'') locations
@@ -589,27 +564,8 @@ def products():
           LEFT JOIN containers c ON c.id=s.container_id
           WHERE p.active=0 AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
-          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
-    elif len(sites) == 2 and not q and not code:
-        page_ids = db.execute("SELECT id FROM products WHERE active=1 ORDER BY sku COLLATE NOCASE LIMIT ? OFFSET ?",
-                              (page_size + 1, offset)).fetchall()
-        prefetched_has_next = len(page_ids) > page_size
-        ids = [row["id"] for row in page_ids[:page_size]]
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            site_placeholders = ",".join("?" for _ in sites)
-            rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
-              CASE WHEN p.legacy_units>0 THEN 'Pendiente de ubicación (' || p.legacy_units || ')'
-                || CASE WHEN GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') IS NOT NULL
-                  THEN ' · ' || GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') ELSE '' END
-                ELSE COALESCE(GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · '),NULLIF(p.source_location,''),'') END locations
-              FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
-              LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site IN ({site_placeholders})
-              WHERE p.active=1 AND p.id IN ({placeholders})
-              GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""", (*sites, *ids)).fetchall()
-        else:
-            rows = []
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
     elif len(sites) == 2:
         placeholders = ",".join("?" for _ in sites)
         rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
@@ -622,8 +578,8 @@ def products():
           WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
-          (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%", page_size+1, offset)).fetchall()
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%")).fetchall()
     elif len(sites) == 1:
         rows = db.execute("""SELECT p.*,COALESCE(SUM(s.quantity),0) units,
           GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · ') locations
@@ -632,34 +588,23 @@ def products():
           WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
-          (sites[0],q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (sites[0],q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
     else:
         rows = []
-    has_next = prefetched_has_next if prefetched_has_next is not None else len(rows) > page_size
-    rows = rows[:page_size]
-    page_args = {"codigo": code, "q": q, "deposito": sites}
-    if archived:
-        page_args["archivados"] = "1"
-    previous_url = url_for("products", page=page-1, **page_args) if page > 1 else ""
-    next_url = url_for("products", page=page+1, **page_args) if has_next else ""
-    start_item = offset + 1 if rows else 0
-    end_item = offset + len(rows)
-    return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived,
-                           page=page, page_size=page_size, has_next=has_next, previous_url=previous_url,
-                           next_url=next_url, start_item=start_item, end_item=end_item)
+    return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived)
 
 
 @app.get("/buscar-talles")
 @login_required
 def size_finder():
     code = request.args.get("codigo", "").strip()
-    color = request.args.get("color", "").strip().upper()
+    color = request.args.get("color", "").strip()
     rows = []
     searched = bool(request.args)
     if code:
         if color:
-            finder_condition = "((p.item=? AND p.color=?) OR p.sku=?)"
+            finder_condition = "((TRIM(p.item)=? AND UPPER(TRIM(p.color))=UPPER(?)) OR p.sku=?)"
             finder_params = (code, color, code)
         else:
             finder_condition = "p.sku=?"
@@ -679,9 +624,6 @@ def size_finder():
             WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
             WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
             p.size COLLATE NOCASE,p.sku""", finder_params).fetchall()
-    if request.args.get("formato") == "json":
-        return jsonify(results=[dict(row) for row in rows], searched=searched,
-                       code=code, color=color)
     return render_template("size_finder.html", results=rows, code=code, color=color, searched=searched)
 
 
@@ -723,7 +665,7 @@ def create_product():
     sku = request.form.get("sku", "").strip()
     name = request.form.get("name", "").strip()
     item = request.form.get("item", "").strip()
-    color = request.form.get("color", "").strip().upper()
+    color = request.form.get("color", "").strip()
     size = request.form.get("size", "").strip()
     description = request.form.get("description", "").strip()
     if not sku or not name:
@@ -886,7 +828,7 @@ def import_elementos_sheet(db, sheet):
         except (TypeError, ValueError):
             raise ValueError(f"La cantidad de unidades no es válida en la fila {row_number}.")
         total_units += units
-        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip().upper(),
+        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip(),
           str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
           str(row.get("ubicaciones") or "").strip()))
     with db:
@@ -963,7 +905,7 @@ def import_data():
                       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
                       name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
                       description=excluded.description,source_location=excluded.source_location,active=1""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
@@ -1024,6 +966,119 @@ def export_data():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name="deposito_stock.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------------------------------------------------------------------
+# Etiquetas de prendas (código de artículo, color, talle y código de barras)
+# ---------------------------------------------------------------------------
+# Patrones Code 128 (anchos de barra/espacio) para los valores 0-106; el 106 es STOP.
+CODE128_PATTERNS = (
+    "212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 "
+    "122231 113222 123122 123221 223211 221132 221231 213212 223112 312131 311222 321122 321221 312212 "
+    "322112 322211 212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 231113 231311 "
+    "112133 112331 132131 113123 113321 133121 313121 211331 231131 213113 213311 213131 311123 311321 "
+    "331121 312113 312311 332111 314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 "
+    "112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 111242 121142 121241 114212 "
+    "124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 "
+    "411311 113141 114131 311141 411131 211412 211214 211232 2331112"
+).split()
+
+GARMENT_LABEL_FORMATS = {
+    "40x20": {"name": "4 × 2 cm", "width": 40, "height": 20, "scale": 1},
+    "102x51": {"name": "4 × 2 pulgadas", "width": 101.6, "height": 50.8, "scale": 2.5},
+}
+GARMENT_LABEL_MAX = 1000
+
+
+def code128_values(text):
+    """Devuelve los valores Code 128 (inicio, datos, control) para un texto ASCII imprimible."""
+    if not text or any(ord(ch) < 32 or ord(ch) > 126 for ch in text):
+        raise ValueError("El código solo puede tener caracteres ASCII imprimibles.")
+    if text.isdigit() and len(text) >= 2:
+        # Set C: dos dígitos por símbolo; si la cantidad es impar, el último va en set B.
+        even = len(text) - (len(text) % 2)
+        values = [105] + [int(text[i:i + 2]) for i in range(0, even, 2)]
+        if even < len(text):
+            values += [100, ord(text[-1]) - 32]
+    else:
+        values = [104] + [ord(ch) - 32 for ch in text]
+    checksum = (values[0] + sum(i * v for i, v in enumerate(values[1:], start=1))) % 103
+    return values + [checksum, 106]
+
+
+def code128_svg(text, quiet=6):
+    """SVG Code 128 sin texto, escalable al tamaño de la etiqueta (barras nítidas)."""
+    widths = "".join(CODE128_PATTERNS[v] for v in code128_values(text))
+    x, bars = quiet, []
+    for index, width in enumerate(widths):
+        width = int(width)
+        if index % 2 == 0:
+            bars.append(f'<rect x="{x}" y="0" width="{width}" height="1"/>')
+        x += width
+    total = x + quiet
+    return Markup(f'<svg class="barcode" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {total} 1" '
+                  f'preserveAspectRatio="none" shape-rendering="crispEdges" role="img" '
+                  f'aria-label="Código de barras {escape(text)}">{"".join(bars)}</svg>')
+
+
+@app.get("/etiquetas-prendas")
+@login_required
+def garment_labels():
+    code = request.args.get("codigo", "").strip()
+    color = request.args.get("color", "").strip()
+    label_format = request.args.get("formato", "40x20")
+    if label_format not in GARMENT_LABEL_FORMATS:
+        label_format = "40x20"
+    rows = []
+    if code:
+        rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size FROM products p
+          WHERE p.active=1 AND (p.sku=? OR (TRIM(p.item)=? AND (?='' OR UPPER(TRIM(p.color))=UPPER(?))))
+          ORDER BY UPPER(TRIM(p.color)),
+            CASE UPPER(TRIM(p.size))
+              WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
+              WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
+            p.size COLLATE NOCASE,p.sku LIMIT 300""", (code, code, color, color)).fetchall()
+    return render_template("garment_labels.html", results=rows, code=code, color=color,
+                           searched="codigo" in request.args, label_format=label_format,
+                           formats=GARMENT_LABEL_FORMATS)
+
+
+@app.get("/etiquetas-prendas/imprimir")
+@login_required
+def print_garment_labels():
+    label_format = request.args.get("formato", "40x20")
+    fmt = GARMENT_LABEL_FORMATS.get(label_format, GARMENT_LABEL_FORMATS["40x20"])
+    copies = {}
+    for raw_id in request.args.getlist("p"):
+        if not raw_id.isdigit():
+            continue
+        try:
+            amount = int(request.args.get(f"q{raw_id}", "1"))
+        except ValueError:
+            amount = 1
+        if amount > 0:
+            copies[int(raw_id)] = min(amount, GARMENT_LABEL_MAX)
+    if not copies:
+        flash("Seleccioná al menos una prenda e indicá cuántas etiquetas imprimir.", "error")
+        return redirect(request.referrer or url_for("garment_labels"))
+    if sum(copies.values()) > GARMENT_LABEL_MAX:
+        flash(f"Podés imprimir hasta {GARMENT_LABEL_MAX} etiquetas por vez.", "error")
+        return redirect(request.referrer or url_for("garment_labels"))
+    placeholders = ",".join("?" for _ in copies)
+    products = get_db().execute(f"SELECT id,sku,item,color,size FROM products WHERE id IN ({placeholders})",
+                                tuple(copies)).fetchall()
+    labels, skipped = [], []
+    for product in sorted(products, key=lambda p: list(copies).index(p["id"])):
+        try:
+            svg = code128_svg(product["sku"].strip())
+        except ValueError:
+            skipped.append(product["sku"])
+            continue
+        labels += [{"product": product, "svg": svg}] * copies[product["id"]]
+    if not labels:
+        flash("Los códigos seleccionados no se pueden representar en Code 128.", "error")
+        return redirect(request.referrer or url_for("garment_labels"))
+    return render_template("garment_label_print.html", labels=labels, fmt=fmt, skipped=skipped)
 
 
 @app.errorhandler(413)
