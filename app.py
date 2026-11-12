@@ -4,14 +4,14 @@ import json
 import os
 import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 import barcode
 from barcode.writer import SVGWriter
 from markupsafe import Markup, escape
 from flask import (Flask, abort, flash, g, make_response, redirect, render_template,
-                   request, send_file, session, url_for)
+                   request, send_file, session, url_for, jsonify)
 from openpyxl import Workbook, load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -104,6 +104,10 @@ def init_db():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    # Normalize the two fields used by the size finder so its composite index can serve searches.
+    db.execute("UPDATE products SET item=TRIM(item), color=UPPER(TRIM(color)) "
+               "WHERE item != TRIM(item) OR color != UPPER(TRIM(color))")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_products_finder ON products(item, color, active)")
     username = os.environ.get("ADMIN_USERNAME", "admin").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not app.config["SECRET_KEY"] or not password:
@@ -294,7 +298,25 @@ def dashboard():
       LEFT JOIN containers f ON f.id=m.from_container_id
       LEFT JOIN containers t ON t.id=m.to_container_id
       ORDER BY m.id DESC LIMIT 8""").fetchall()
-    return render_template("dashboard.html", stats=stats, recent=recent)
+    week_rows = {
+        row[0]: row[1]
+        for row in db.execute(
+            "SELECT date(created_at), COUNT(*) FROM movements "
+            "WHERE date(created_at) >= date('now','localtime','-6 days') GROUP BY 1"
+        )
+    }
+    today = datetime.now().astimezone().date()
+    labels = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+    week = []
+    peak = 1
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        count = int(week_rows.get(day.isoformat(), 0) or 0)
+        peak = max(peak, count)
+        week.append({"label": labels[day.weekday()], "count": count})
+    for item in week:
+        item["pct"] = round(100 * item["count"] / peak) if peak else 0
+    return render_template("dashboard.html", stats=stats, recent=recent, week=week)
 
 
 def next_container_code(db):
@@ -557,6 +579,10 @@ def products():
         sites = ["Bariloche", "Retiro"]
     db = get_db()
     archived = request.args.get("archivados") == "1"
+    page_size = 100
+    page = max(1, request.args.get("page", 1, type=int))
+    offset = (page - 1) * page_size
+    prefetched_has_next = None
     if archived:
         rows = db.execute("""SELECT p.*,p.legacy_units+COALESCE(SUM(s.quantity),0) units,
           COALESCE(GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · '),p.source_location,'') locations
@@ -564,8 +590,27 @@ def products():
           LEFT JOIN containers c ON c.id=s.container_id
           WHERE p.active=0 AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
-          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
+          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
+    elif len(sites) == 2 and not q and not code:
+        page_ids = db.execute("SELECT id FROM products WHERE active=1 ORDER BY sku COLLATE NOCASE LIMIT ? OFFSET ?",
+                              (page_size + 1, offset)).fetchall()
+        prefetched_has_next = len(page_ids) > page_size
+        ids = [row["id"] for row in page_ids[:page_size]]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            site_placeholders = ",".join("?" for _ in sites)
+            rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
+              CASE WHEN p.legacy_units>0 THEN 'Pendiente de ubicación (' || p.legacy_units || ')'
+                || CASE WHEN GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') IS NOT NULL
+                  THEN ' · ' || GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') ELSE '' END
+                ELSE COALESCE(GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · '),NULLIF(p.source_location,''),'') END locations
+              FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
+              LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site IN ({site_placeholders})
+              WHERE p.active=1 AND p.id IN ({placeholders})
+              GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""", (*sites, *ids)).fetchall()
+        else:
+            rows = []
     elif len(sites) == 2:
         placeholders = ",".join("?" for _ in sites)
         rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
@@ -578,8 +623,8 @@ def products():
           WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
-          (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%")).fetchall()
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
+          (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%", page_size+1, offset)).fetchall()
     elif len(sites) == 1:
         rows = db.execute("""SELECT p.*,COALESCE(SUM(s.quantity),0) units,
           GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · ') locations
@@ -588,23 +633,34 @@ def products():
           WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
-          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
-          (sites[0],q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
+          (sites[0],q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
     else:
         rows = []
-    return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived)
+    has_next = prefetched_has_next if prefetched_has_next is not None else len(rows) > page_size
+    rows = rows[:page_size]
+    page_args = {"codigo": code, "q": q, "deposito": sites}
+    if archived:
+        page_args["archivados"] = "1"
+    previous_url = url_for("products", page=page-1, **page_args) if page > 1 else ""
+    next_url = url_for("products", page=page+1, **page_args) if has_next else ""
+    start_item = offset + 1 if rows else 0
+    end_item = offset + len(rows)
+    return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived,
+                           page=page, page_size=page_size, has_next=has_next, previous_url=previous_url,
+                           next_url=next_url, start_item=start_item, end_item=end_item)
 
 
 @app.get("/buscar-talles")
 @login_required
 def size_finder():
     code = request.args.get("codigo", "").strip()
-    color = request.args.get("color", "").strip()
+    color = request.args.get("color", "").strip().upper()
     rows = []
     searched = bool(request.args)
     if code:
         if color:
-            finder_condition = "((TRIM(p.item)=? AND UPPER(TRIM(p.color))=UPPER(?)) OR p.sku=?)"
+            finder_condition = "((p.item=? AND p.color=?) OR p.sku=?)"
             finder_params = (code, color, code)
         else:
             finder_condition = "p.sku=?"
@@ -624,6 +680,9 @@ def size_finder():
             WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
             WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
             p.size COLLATE NOCASE,p.sku""", finder_params).fetchall()
+    if request.args.get("formato") == "json":
+        return jsonify(results=[dict(row) for row in rows], searched=searched,
+                       code=code, color=color)
     return render_template("size_finder.html", results=rows, code=code, color=color, searched=searched)
 
 
@@ -665,7 +724,7 @@ def create_product():
     sku = request.form.get("sku", "").strip()
     name = request.form.get("name", "").strip()
     item = request.form.get("item", "").strip()
-    color = request.form.get("color", "").strip()
+    color = request.form.get("color", "").strip().upper()
     size = request.form.get("size", "").strip()
     description = request.form.get("description", "").strip()
     if not sku or not name:
@@ -828,7 +887,7 @@ def import_elementos_sheet(db, sheet):
         except (TypeError, ValueError):
             raise ValueError(f"La cantidad de unidades no es válida en la fila {row_number}.")
         total_units += units
-        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip(),
+        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip().upper(),
           str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
           str(row.get("ubicaciones") or "").strip()))
     with db:
@@ -905,7 +964,7 @@ def import_data():
                       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
                       name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
                       description=excluded.description,source_location=excluded.source_location,active=1""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
