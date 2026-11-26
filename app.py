@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS containers (
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   item TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '', legacy_units INTEGER NOT NULL DEFAULT 0,
+  description TEXT NOT NULL DEFAULT '', color_name TEXT NOT NULL DEFAULT '',
+  season TEXT NOT NULL DEFAULT '', legacy_units INTEGER NOT NULL DEFAULT 0,
   virtual_units INTEGER NOT NULL DEFAULT 0,
   source_location TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
@@ -95,6 +96,8 @@ def init_db():
         ("products", "item", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "color_name", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "season", "TEXT NOT NULL DEFAULT ''"),
         ("products", "legacy_units", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "virtual_units", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "source_location", "TEXT NOT NULL DEFAULT ''"),
@@ -727,12 +730,15 @@ def create_product():
     color = request.form.get("color", "").strip().upper()
     size = request.form.get("size", "").strip()
     description = request.form.get("description", "").strip()
+    color_name = request.form.get("color_name", "").strip().upper()
+    season = request.form.get("season", "").strip().upper()
     if not sku or not name:
         flash("El código/SKU y el nombre son obligatorios.", "error")
         return redirect(url_for("products"))
     try:
         db = get_db()
-        db.execute("INSERT INTO products(sku,name,item,color,size,description,created_at) VALUES(?,?,?,?,?,?,?)", (sku, name, item, color, size, description, now_text()))
+        db.execute("INSERT INTO products(sku,name,item,color,size,description,color_name,season,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                   (sku, name, item, color, size, description, color_name, season, now_text()))
         db.commit()
     except sqlite3.IntegrityError:
         flash("Ese código de producto ya existe.", "error")
@@ -861,6 +867,13 @@ def movements():
                            destination_index=destination_index, virtual_container=virtual_container)
 
 
+def optional_label_fields(row):
+    """Columnas opcionales para la etiqueta de 3 × 5 cm: nombre del color y temporada."""
+    color_name = row.get("color_nombre") or row.get("nombre_color") or row.get("color_name") or ""
+    season = row.get("temporada") or row.get("season") or ""
+    return str(color_name).strip().upper(), str(season).strip().upper()
+
+
 def import_elementos_sheet(db, sheet):
     headers = [str(cell or "").strip().lower() for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
     required = ["codigo", "nombre", "item", "color", "talle", "descripcion", "unidades"]
@@ -889,18 +902,20 @@ def import_elementos_sheet(db, sheet):
         total_units += units
         cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip().upper(),
           str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
-          str(row.get("ubicaciones") or "").strip()))
+          str(row.get("ubicaciones") or "").strip(), *optional_label_fields(row)))
     with db:
         virtual = db.execute("SELECT id FROM containers WHERE is_virtual=1 AND active=1 LIMIT 1").fetchone()
         if not virtual:
             raise ValueError("No se encontró el Depósito Virtual. Reiniciá el servicio para actualizarlo.")
         for item in cleaned:
-            db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,virtual_units,source_location,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+            db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,virtual_units,source_location,color_name,season,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
               name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
               description=excluded.description,source_location=excluded.source_location,
+              color_name=CASE WHEN excluded.color_name!='' THEN excluded.color_name ELSE products.color_name END,
+              season=CASE WHEN excluded.season!='' THEN excluded.season ELSE products.season END,
               virtual_units=excluded.virtual_units,legacy_units=0,active=1""",
-              (item[0],item[1],item[2],item[3],item[4],item[5],0,item[6],item[7],now_text()))
+              (item[0],item[1],item[2],item[3],item[4],item[5],0,item[6],item[7],item[8],item[9],now_text()))
             product_id = db.execute("SELECT id FROM products WHERE sku=?", (item[0],)).fetchone()[0]
             # Zero quantity records membership in the virtual source without claiming real stock.
             db.execute("INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,0) ON CONFLICT(container_id,product_id) DO NOTHING",
@@ -960,11 +975,13 @@ def import_data():
                     pending = r.get("unidades_sin_ubicar") or 0
                     if not isinstance(pending, (int,float)) or int(pending) != pending or pending < 0:
                         raise ValueError("Las unidades sin ubicar deben ser números enteros iguales o mayores que cero.")
-                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,created_at)
-                      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,color_name,season,created_at)
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
                       name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
-                      description=excluded.description,source_location=excluded.source_location,active=1""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
+                      description=excluded.description,source_location=excluded.source_location,
+                      color_name=CASE WHEN excluded.color_name!='' THEN excluded.color_name ELSE products.color_name END,
+                      season=CASE WHEN excluded.season!='' THEN excluded.season ELSE products.season END,active=1""",
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),*optional_label_fields(r),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
@@ -986,7 +1003,7 @@ def import_template():
     wb = Workbook()
     sheets = {
         "Contenedores": ["codigo", "nombre", "ubicacion", "sucursal"],
-        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion", "unidades_sin_ubicar", "ubicaciones"],
+        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion", "unidades_sin_ubicar", "ubicaciones", "color_nombre", "temporada"],
         "Stock": ["codigo_contenedor", "sku", "cantidad"],
     }
     for index, (name, headers) in enumerate(sheets.items()):
@@ -1009,13 +1026,13 @@ def export_data():
     wb = Workbook()
     for index, (name, query) in enumerate([
         ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers WHERE active=1 ORDER BY code"),
-        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones FROM products ORDER BY sku"),
+        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones,color_name color_nombre,season temporada FROM products ORDER BY sku"),
         ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 ORDER BY c.code,p.sku"),
     ]):
         ws = wb.active if index == 0 else wb.create_sheet()
         ws.title = name
         rows = db.execute(query).fetchall()
-        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
+        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones","color_nombre","temporada"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
         for row in rows:
             ws.append(list(row))
         ws.freeze_panes = "A2"
@@ -1044,6 +1061,8 @@ CODE128_PATTERNS = (
 
 GARMENT_LABEL_FORMATS = {
     "40x20": {"name": "4 × 2 cm", "width": 40, "height": 20, "scale": 1},
+    # Etiqueta comercial: nombre, color, talle, artículo, código de color, temporada y código de barras.
+    "50x30": {"name": "3 × 5 cm (completa)", "width": 50, "height": 30, "scale": 1, "layout": "full"},
     "102x51": {"name": "4 × 2 pulgadas", "width": 101.6, "height": 50.8, "scale": 2.5},
 }
 GARMENT_LABEL_MAX = 1000
@@ -1063,6 +1082,14 @@ def code128_values(text):
         values = [104] + [ord(ch) - 32 for ch in text]
     checksum = (values[0] + sum(i * v for i, v in enumerate(values[1:], start=1))) % 103
     return values + [checksum, 106]
+
+
+def barcode_digits(code):
+    """Texto legible bajo el código de barras; un UPC de 12 dígitos se agrupa como 1 95699 46251 9."""
+    code = (code or "").strip()
+    if len(code) == 12 and code.isdigit():
+        return f"{code[0]} {code[1:6]} {code[6:11]} {code[11]}"
+    return code
 
 
 def code128_svg(text, quiet=6):
@@ -1090,7 +1117,7 @@ def garment_labels():
         label_format = "40x20"
     rows = []
     if code:
-        rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size FROM products p
+        rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size,p.color_name,p.season FROM products p
           WHERE p.active=1 AND (p.sku=? OR (TRIM(p.item)=? AND (?='' OR UPPER(TRIM(p.color))=UPPER(?))))
           ORDER BY UPPER(TRIM(p.color)),
             CASE UPPER(TRIM(p.size))
@@ -1124,7 +1151,7 @@ def print_garment_labels():
         flash(f"Podés imprimir hasta {GARMENT_LABEL_MAX} etiquetas por vez.", "error")
         return redirect(request.referrer or url_for("garment_labels"))
     placeholders = ",".join("?" for _ in copies)
-    products = get_db().execute(f"SELECT id,sku,item,color,size FROM products WHERE id IN ({placeholders})",
+    products = get_db().execute(f"SELECT id,sku,name,item,color,size,color_name,season FROM products WHERE id IN ({placeholders})",
                                 tuple(copies)).fetchall()
     labels, skipped = [], []
     for product in sorted(products, key=lambda p: list(copies).index(p["id"])):
@@ -1133,7 +1160,7 @@ def print_garment_labels():
         except ValueError:
             skipped.append(product["sku"])
             continue
-        labels += [{"product": product, "svg": svg}] * copies[product["id"]]
+        labels += [{"product": product, "svg": svg, "digits": barcode_digits(product["sku"])}] * copies[product["id"]]
     if not labels:
         flash("Los códigos seleccionados no se pueden representar en Code 128.", "error")
         return redirect(request.referrer or url_for("garment_labels"))
