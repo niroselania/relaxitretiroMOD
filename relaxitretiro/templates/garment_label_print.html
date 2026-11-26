@@ -1,0 +1,35 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Etiquetas de prendas ({{ labels|length }})</title>
+<style>
+:root{--k:{{ fmt.scale }}}
+*{box-sizing:border-box}
+body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:0;padding:16px;background:#eef1f2}
+.toolbar{font-size:13px;margin-bottom:12px;display:flex;gap:12px;align-items:center}
+.toolbar button{padding:6px 14px;font-weight:700;cursor:pointer}
+.sheet{display:flex;flex-wrap:wrap;gap:8px}
+.label{width:{{ fmt.width }}mm;height:{{ fmt.height }}mm;background:#fff;border:1px dashed #bbb;padding:calc(var(--k)*1.2mm) calc(var(--k)*1.5mm);display:flex;flex-direction:column;overflow:hidden}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:calc(var(--k)*1mm);line-height:1}
+.info{min-width:0}
+.item{font-weight:700;font-size:calc(var(--k)*3.4mm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.color{font-size:calc(var(--k)*2.6mm);margin-top:calc(var(--k)*.6mm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.size{font-weight:700;font-size:calc(var(--k)*4mm);border:calc(var(--k)*.3mm) solid #000;padding:calc(var(--k)*.4mm) calc(var(--k)*1mm);white-space:nowrap}
+.barcode{display:block;width:100%;flex:1;min-height:0;margin-top:calc(var(--k)*.8mm)}
+.sku{text-align:center;font-size:calc(var(--k)*2.2mm);letter-spacing:.3px;line-height:1;margin-top:calc(var(--k)*.4mm)}
+.warn{color:#a00}
+/* Etiqueta completa 3 × 5 cm */
+.label.full{padding:1.6mm 2mm 1.4mm;font-weight:400}
+.f-name{font-size:2.5mm;line-height:1.1;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f-body{flex:1;min-height:0;display:grid;grid-template-columns:15mm 1fr;gap:1.5mm;margin-top:1.4mm}
+.f-left{display:flex;flex-direction:column;min-width:0;font-size:2.3mm;line-height:1.15;text-transform:uppercase}
+.f-left>div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f-size{margin-top:.8mm;font-size:2.6mm}
+.f-codes{margin-top:auto}
+.f-right{display:flex;flex-direction:column;min-width:0;padding-top:2mm}
+.f-right .barcode{margin-top:0}
+.f-digits{text-align:center;font-size:2.4mm;letter-spacing:.35mm;line-height:1;margin-top:.5mm;white-space:nowrap}
+@page{size:{{ fmt.width }}mm {{ fmt.height }}mm;margin:0}
+@media print{body{padding:0;background:#fff}.toolbar{display:none}.sheet{display:block}.label{border:0;break-after:page;page-break-after:always}.label:last-child{break-after:auto;page-break-after:auto}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">Imprimir</button><span>{{ labels|length }} etiqueta{% if labels|length != 1 %}s{% endif %} de {{ fmt.name }}. En la impresora elegí ese tamaño de papel, escala 100% y sin márgenes.</span>{% if skipped %}<span class="warn">No se pudieron generar: {{ skipped|join(', ') }}</span>{% endif %}</div>
+<div class="sheet">{% for l in labels %}{% if fmt.layout == 'full' %}{% set p = l.product %}<div class="label full"><div class="f-name">{{ p.name or p.item or p.sku }}</div><div class="f-body"><div class="f-left"><div>{{ p.color_name or '' }}</div><div class="f-size">{{ p.size or '' }}</div><div class="f-codes"><div>{{ p.item or '' }}</div><div>{{ p.color or '' }}</div><div>{{ p.season or '' }}</div></div></div><div class="f-right">{{ l.svg }}<div class="f-digits">{{ l.digits }}</div></div></div></div>{% else %}<div class="label"><div class="top"><div class="info"><div class="item">{{ l.product.item or l.product.sku }}</div><div class="color">{{ l.product.color or '—' }}</div></div>{% if l.product.size %}<div class="size">{{ l.product.size }}</div>{% endif %}</div>{{ l.svg }}<div class="sku">{{ l.product.sku }}</div></div>{% endif %}{% endfor %}</div>
+<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),300))</script>
+</body></html>

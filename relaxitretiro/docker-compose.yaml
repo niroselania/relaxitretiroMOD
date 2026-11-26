@@ -1,0 +1,18 @@
+services:
+  deposito:
+    build: .
+    container_name: deposito-stock
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8001}:8000"
+    environment:
+      DATABASE_PATH: /data/deposito.sqlite3
+      SECRET_KEY: ${SECRET_KEY:?Definí SECRET_KEY en Portainer}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Definí ADMIN_PASSWORD en Portainer}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    volumes:
+      - deposito_data:/data
+
+volumes:
+  deposito_data:
