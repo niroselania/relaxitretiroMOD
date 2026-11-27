@@ -93,6 +93,7 @@ def init_db():
         ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
         ("containers", "parent_id", "INTEGER REFERENCES containers(id)"),
         ("containers", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
+        ("containers", "from_stock_sheet", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "item", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
@@ -108,6 +109,9 @@ def init_db():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    # Racks creados por la planilla de stock (versiones previas los marcaban solo con la ubicación).
+    db.execute("UPDATE containers SET from_stock_sheet=1 WHERE from_stock_sheet=0 AND is_virtual=0 "
+               "AND location='Planilla de stock' AND name LIKE 'RACK %'")
     # Normalize the two fields used by the size finder so its composite index can serve searches.
     db.execute("UPDATE products SET item=TRIM(item), color=UPPER(TRIM(color)) "
                "WHERE item != TRIM(item) OR color != UPPER(TRIM(color))")
@@ -751,7 +755,8 @@ def create_product():
 @app.route("/stock")
 @login_required
 def stock_view():
-    # Mismas columnas que Productos: una fila por producto con sus unidades y ubicaciones físicas.
+    # Mismas columnas que Productos. Solo cuenta los racks del local cargados en el sistema:
+    # excluye el Depósito Virtual y los racks generados por la planilla de stock.
     q = request.args.get("q", "").strip()
     page_size = 100
     page = max(1, request.args.get("page", 1, type=int))
@@ -761,7 +766,7 @@ def stock_view():
       SUM(s.quantity) units,
       GROUP_CONCAT(c.id || char(31) || c.name || char(31) || s.quantity, char(30)) locations
       FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id
-      WHERE c.active=1 AND c.is_virtual=0 AND s.quantity>0
+      WHERE c.active=1 AND c.is_virtual=0 AND c.from_stock_sheet=0 AND s.quantity>0
         AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ?
              OR p.description LIKE ? OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
       GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
@@ -774,11 +779,18 @@ def stock_view():
             {"id": int(cid), "name": name, "quantity": int(qty)}
             for cid, name, qty in (part.split("\x1f") for part in (row["locations"] or "").split("\x1e") if part)]
         products.append(product)
+    diagnostics = None
+    if not products and not q:
+        db = get_db()
+        diagnostics = {
+            "racks": db.execute("SELECT COUNT(*) FROM containers WHERE active=1 AND is_virtual=0 AND from_stock_sheet=0").fetchone()[0],
+            "virtual_units": db.execute("SELECT COALESCE(SUM(virtual_units),0) FROM products WHERE active=1").fetchone()[0],
+        }
     previous_url = url_for("stock_view", q=q, page=page - 1) if page > 1 else ""
     next_url = url_for("stock_view", q=q, page=page + 1) if has_next else ""
     return render_template("stock.html", products=products, q=q, page_size=page_size,
                            start_item=offset + 1 if products else 0, end_item=offset + len(products),
-                           previous_url=previous_url, next_url=next_url)
+                           previous_url=previous_url, next_url=next_url, diagnostics=diagnostics)
 
 
 @app.route("/lector")
@@ -1041,12 +1053,13 @@ def import_stock_sheet(db, sheet, site):
         rack_ids, created_racks = [], 0
         for _, rack in racks:
             name = f"RACK {rack.upper()}"
-            found = db.execute("SELECT id FROM containers WHERE active=1 AND is_virtual=0 AND site=? AND UPPER(name)=?",
-                               (site, name)).fetchone()
+            # Solo se reutilizan racks creados por esta planilla; los racks del local no se tocan.
+            found = db.execute("SELECT id FROM containers WHERE active=1 AND is_virtual=0 AND from_stock_sheet=1 "
+                               "AND site=? AND UPPER(name)=?", (site, name)).fetchone()
             if not found:
                 code = next_container_code(db)
-                db.execute("INSERT INTO containers(code,name,location,site,parent_id,created_at) VALUES(?,?,?,?,NULL,?)",
-                           (code, name, "Planilla de stock", site, now_text()))
+                db.execute("INSERT INTO containers(code,name,location,site,parent_id,from_stock_sheet,created_at) "
+                           "VALUES(?,?,?,?,NULL,1,?)", (code, name, "Planilla de stock", site, now_text()))
                 found = db.execute("SELECT id FROM containers WHERE code=?", (code,)).fetchone()
                 created_racks += 1
             rack_ids.append(found["id"])
