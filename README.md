@@ -18,7 +18,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas. Los resultados se cargan en segundo plano y el catálogo usa un índice para artículo/color.
 - Bot de Telegram para consultar talles y ubicaciones enviando `CÓDIGO COLOR` o `/buscar CÓDIGO COLOR`.
 - El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
-- Stock por contenedor, consulta y búsqueda por ubicación.
+- **Consultar stock** con las mismas columnas que Productos (Código, Nombre, Item, Color, Talle, Descripción, Unidades, Ubicación): una fila por producto con sus unidades físicas y los racks donde está, 100 por página. Al buscar por rack, las unidades y ubicaciones se limitan a ese rack.
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
 - Flujo PICK para traslados por lote: escaneá el código del contenedor de origen y destino, luego las etiquetas de varias prendas; cada lectura suma una unidad y el lote se aplica al confirmar.

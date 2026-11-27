@@ -751,13 +751,34 @@ def create_product():
 @app.route("/stock")
 @login_required
 def stock_view():
+    # Mismas columnas que Productos: una fila por producto con sus unidades y ubicaciones físicas.
     q = request.args.get("q", "").strip()
-    rows = get_db().execute("""SELECT c.id container_id,c.code container_code,c.name container_name,c.location,
-      p.sku,p.name product_name,s.quantity
+    page_size = 100
+    page = max(1, request.args.get("page", 1, type=int))
+    offset = (page - 1) * page_size
+    like = f"%{q}%"
+    rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size,p.description,
+      SUM(s.quantity) units,
+      GROUP_CONCAT(c.id || char(31) || c.name || char(31) || s.quantity, char(30)) locations
       FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id
-      WHERE c.active=1 AND s.quantity>0 AND (?='' OR p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ? OR c.code LIKE ?)
-      ORDER BY c.name COLLATE NOCASE,p.name COLLATE NOCASE""", (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%")).fetchall()
-    return render_template("stock.html", rows=rows, q=q)
+      WHERE c.active=1 AND c.is_virtual=0 AND s.quantity>0
+        AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ?
+             OR p.description LIKE ? OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
+      GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
+      (q, like, like, like, like, like, like, like, like, like, page_size + 1, offset)).fetchall()
+    has_next = len(rows) > page_size
+    products = []
+    for row in rows[:page_size]:
+        product = dict(row)
+        product["locations"] = [
+            {"id": int(cid), "name": name, "quantity": int(qty)}
+            for cid, name, qty in (part.split("\x1f") for part in (row["locations"] or "").split("\x1e") if part)]
+        products.append(product)
+    previous_url = url_for("stock_view", q=q, page=page - 1) if page > 1 else ""
+    next_url = url_for("stock_view", q=q, page=page + 1) if has_next else ""
+    return render_template("stock.html", products=products, q=q, page_size=page_size,
+                           start_item=offset + 1 if products else 0, end_item=offset + len(products),
+                           previous_url=previous_url, next_url=next_url)
 
 
 @app.route("/lector")
