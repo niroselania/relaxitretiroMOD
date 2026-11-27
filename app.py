@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   item TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '', color_name TEXT NOT NULL DEFAULT '',
-  season TEXT NOT NULL DEFAULT '', legacy_units INTEGER NOT NULL DEFAULT 0,
+  season TEXT NOT NULL DEFAULT '', retail_price REAL, legacy_units INTEGER NOT NULL DEFAULT 0,
   virtual_units INTEGER NOT NULL DEFAULT 0,
   source_location TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
@@ -98,6 +98,7 @@ def init_db():
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color_name", "TEXT NOT NULL DEFAULT ''"),
         ("products", "season", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "retail_price", "REAL"),
         ("products", "legacy_units", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "virtual_units", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "source_location", "TEXT NOT NULL DEFAULT ''"),
@@ -924,6 +925,151 @@ def import_elementos_sheet(db, sheet):
     return len(cleaned), total_units, location_count
 
 
+# ---------------------------------------------------------------------------
+# Planilla de stock por racks (hoja STOCK: columnas M a U = racks, K = RETAIL)
+# ---------------------------------------------------------------------------
+IVA_RATE = 0.21
+STOCK_RACK_COLUMNS = range(12, 21)  # columnas M..U (0 = A)
+STOCK_PRICE_COLUMN = 10             # columna K (RETAIL, precio final con IVA)
+
+
+def price_without_iva(price):
+    """El precio RETAIL ya incluye 21 % de IVA: el neto es precio / 1,21."""
+    return None if price is None else round(price / (1 + IVA_RATE), 2)
+
+
+def format_ars(value, decimals=None):
+    """Formato argentino: $ 74.900 o $ 61.900,83."""
+    if value is None:
+        return ""
+    if decimals is None:
+        decimals = 0 if float(value).is_integer() else 2
+    text = f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"$ {text}"
+
+
+app.jinja_env.filters["ars"] = format_ars
+
+
+def _cell_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return " ".join(str(value).split())
+
+
+def import_stock_sheet(db, sheet, site):
+    """Crea/actualiza un rack por cada columna M..U y deja su stock igual al de la planilla."""
+    rows = sheet.iter_rows(values_only=True)
+    headers = [_cell_text(h) for h in next(rows)]
+    upper = [h.upper() for h in headers]
+    if len(headers) < 21:
+        raise ValueError("La planilla de stock debe tener al menos hasta la columna U (racks en M a U).")
+    if upper[STOCK_PRICE_COLUMN] != "RETAIL":
+        raise ValueError("La columna K de la planilla de stock debe llamarse RETAIL.")
+
+    def col(name, default):
+        return upper.index(name) if name in upper else default
+    c_item, c_color, c_size, c_name = col("SKU", 1), col("COLOR", 2), col("TALLE", 3), col("NOMBRE", 4)
+    c_year, c_season = col("AÑO", 6), col("TEMP", 7)
+    racks = [(index, headers[index]) for index in STOCK_RACK_COLUMNS]
+    if any(not name for _, name in racks):
+        raise ValueError("Cada columna de M a U debe tener en la fila 1 el nombre del rack.")
+
+    merged, order = {}, []
+    negatives = duplicates = 0
+    for row_number, row in enumerate(rows, start=2):
+        row = list(row) + [None] * (21 - len(row))
+        item = _cell_text(row[c_item])
+        if not item or _cell_text(row[c_name]).upper() == "TOTAL":
+            continue  # filas vacías y fila de totales
+        color = _cell_text(row[c_color]).upper()
+        size = _cell_text(row[c_size])
+        key = (item, color, size.upper())
+        quantities = []
+        for index, rack in racks:
+            raw = row[index]
+            if raw in (None, "", "-"):
+                qty = 0
+            elif isinstance(raw, (int, float)) and float(raw).is_integer():
+                qty = int(raw)
+            else:
+                raise ValueError(f"Cantidad no válida en la fila {row_number}, rack {rack}: {raw!r}.")
+            if qty < 0:
+                negatives += 1
+                qty = 0
+            quantities.append(qty)
+        price = row[STOCK_PRICE_COLUMN]
+        price = float(price) if isinstance(price, (int, float)) and price > 0 else None
+        year, temp = row[c_year], _cell_text(row[c_season]).upper()
+        season = f"{temp}{int(year) % 100:02d}" if temp in ("SP", "SU", "FA", "WI", "HO") and isinstance(year, (int, float)) else ""
+        if key in merged:
+            duplicates += 1
+            entry = merged[key]
+            entry["qty"] = [a + b for a, b in zip(entry["qty"], quantities)]
+            entry["price"] = entry["price"] or price
+        else:
+            merged[key] = {"item": item, "color": color, "size": size, "name": _cell_text(row[c_name]) or item,
+                           "season": season, "price": price, "qty": quantities}
+            order.append(key)
+    if not merged:
+        raise ValueError("La planilla de stock no tiene artículos.")
+
+    with db:
+        rack_ids, created_racks = [], 0
+        for _, rack in racks:
+            name = f"RACK {rack.upper()}"
+            found = db.execute("SELECT id FROM containers WHERE active=1 AND is_virtual=0 AND site=? AND UPPER(name)=?",
+                               (site, name)).fetchone()
+            if not found:
+                code = next_container_code(db)
+                db.execute("INSERT INTO containers(code,name,location,site,parent_id,created_at) VALUES(?,?,?,?,NULL,?)",
+                           (code, name, "Planilla de stock", site, now_text()))
+                found = db.execute("SELECT id FROM containers WHERE code=?", (code,)).fetchone()
+                created_racks += 1
+            rack_ids.append(found["id"])
+        # La planilla es una foto completa: se reemplaza el stock de estos racks.
+        placeholders = ",".join("?" for _ in rack_ids)
+        db.execute(f"DELETE FROM stock WHERE container_id IN ({placeholders})", rack_ids)
+
+        index = {}
+        for p in db.execute("SELECT id,item,color,size FROM products ORDER BY active DESC,id"):
+            index.setdefault((p["item"].strip(), p["color"].strip().upper(), p["size"].strip().upper()), []).append(p["id"])
+        new_products = priced = units = 0
+        for key in order:
+            entry = merged[key]
+            ids = index.get(key)
+            if not ids:
+                sku = " ".join(part for part in (entry["item"], entry["color"], entry["size"]) if part)
+                existing = db.execute("SELECT id FROM products WHERE sku=?", (sku,)).fetchone()
+                if existing:
+                    ids = [existing["id"]]
+                    db.execute("UPDATE products SET item=?,color=?,size=? WHERE id=?",
+                               (entry["item"], entry["color"], entry["size"], existing["id"]))
+                else:
+                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,season,created_at)
+                      VALUES(?,?,?,?,?,'',?,?)""", (sku, entry["name"], entry["item"], entry["color"],
+                                                     entry["size"], entry["season"], now_text()))
+                    ids = [db.execute("SELECT id FROM products WHERE sku=?", (sku,)).fetchone()["id"]]
+                    new_products += 1
+                index[key] = ids
+            if entry["price"] is not None:
+                priced += 1
+            placeholders = ",".join("?" for _ in ids)
+            # El precio se aplica a todas las variantes (códigos de barras) de ese artículo/color/talle.
+            db.execute(f"""UPDATE products SET retail_price=COALESCE(?,retail_price),
+              season=CASE WHEN season='' THEN ? ELSE season END,active=1 WHERE id IN ({placeholders})""",
+              (entry["price"], entry["season"], *ids))
+            for rack_id, qty in zip(rack_ids, entry["qty"]):
+                if qty > 0:
+                    db.execute("INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,?)", (rack_id, ids[0], qty))
+                    units += qty
+    return {"articles": len(order), "racks": [f"RACK {r.upper()}" for _, r in racks], "created_racks": created_racks,
+            "new_products": new_products, "priced": priced, "units": units,
+            "negatives": negatives, "duplicates": duplicates}
+
+
 @app.route("/importar", methods=["GET", "POST"])
 @login_required
 @admin_for_writes
@@ -935,6 +1081,24 @@ def import_data():
             return redirect(url_for("import_data"))
         try:
             workbook = load_workbook(upload, read_only=True, data_only=True)
+            if request.form.get("tipo") == "stock":
+                site = request.form.get("site", "Retiro")
+                if site not in ("Bariloche", "Retiro"):
+                    raise ValueError("Elegí Bariloche o Retiro como depósito de los racks.")
+                sheet = workbook["STOCK"] if "STOCK" in workbook.sheetnames else workbook.worksheets[0]
+                r = import_stock_sheet(get_db(), sheet, site)
+                n = lambda v: f"{v:,}".replace(",", ".")
+                message = (f"Planilla de stock importada en {site}: {n(r['articles'])} artículos y {n(r['units'])} unidades "
+                           f"en {len(r['racks'])} racks ({', '.join(r['racks'])}); {r['created_racks']} racks nuevos. "
+                           f"Precios RETAIL cargados para {n(r['priced'])} artículos.")
+                if r["new_products"]:
+                    message += f" Se dieron de alta {n(r['new_products'])} artículos que no estaban en el catálogo."
+                if r["negatives"]:
+                    message += f" {r['negatives']} cantidades negativas se tomaron como 0."
+                if r["duplicates"]:
+                    message += f" {r['duplicates']} filas repetidas se sumaron."
+                flash(message, "success")
+                return redirect(url_for("import_data"))
             if "elementos" in workbook.sheetnames:
                 db = get_db()
                 count, total_units, location_count = import_elementos_sheet(db, workbook["elementos"])
@@ -975,13 +1139,15 @@ def import_data():
                     pending = r.get("unidades_sin_ubicar") or 0
                     if not isinstance(pending, (int,float)) or int(pending) != pending or pending < 0:
                         raise ValueError("Las unidades sin ubicar deben ser números enteros iguales o mayores que cero.")
-                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,color_name,season,created_at)
-                      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,color_name,season,retail_price,created_at)
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+                      retail_price=COALESCE(excluded.retail_price,products.retail_price),
                       name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
                       description=excluded.description,source_location=excluded.source_location,
                       color_name=CASE WHEN excluded.color_name!='' THEN excluded.color_name ELSE products.color_name END,
                       season=CASE WHEN excluded.season!='' THEN excluded.season ELSE products.season END,active=1""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),*optional_label_fields(r),now_text()))
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip().upper(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),*optional_label_fields(r),
+                       float(r["precio_retail"]) if isinstance(r.get("precio_retail"), (int, float)) and r["precio_retail"] > 0 else None,now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
@@ -1003,7 +1169,7 @@ def import_template():
     wb = Workbook()
     sheets = {
         "Contenedores": ["codigo", "nombre", "ubicacion", "sucursal"],
-        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion", "unidades_sin_ubicar", "ubicaciones", "color_nombre", "temporada"],
+        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion", "unidades_sin_ubicar", "ubicaciones", "color_nombre", "temporada", "precio_retail"],
         "Stock": ["codigo_contenedor", "sku", "cantidad"],
     }
     for index, (name, headers) in enumerate(sheets.items()):
@@ -1026,13 +1192,13 @@ def export_data():
     wb = Workbook()
     for index, (name, query) in enumerate([
         ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers WHERE active=1 ORDER BY code"),
-        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones,color_name color_nombre,season temporada FROM products ORDER BY sku"),
+        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones,color_name color_nombre,season temporada,retail_price precio_retail FROM products ORDER BY sku"),
         ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 ORDER BY c.code,p.sku"),
     ]):
         ws = wb.active if index == 0 else wb.create_sheet()
         ws.title = name
         rows = db.execute(query).fetchall()
-        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones","color_nombre","temporada"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
+        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones","color_nombre","temporada","precio_retail"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
         for row in rows:
             ws.append(list(row))
         ws.freeze_panes = "A2"
@@ -1117,7 +1283,7 @@ def garment_labels():
         label_format = "40x20"
     rows = []
     if code:
-        rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size,p.color_name,p.season FROM products p
+        rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size,p.color_name,p.season,p.retail_price FROM products p
           WHERE p.active=1 AND (p.sku=? OR (TRIM(p.item)=? AND (?='' OR UPPER(TRIM(p.color))=UPPER(?))))
           ORDER BY UPPER(TRIM(p.color)),
             CASE UPPER(TRIM(p.size))
@@ -1151,7 +1317,7 @@ def print_garment_labels():
         flash(f"Podés imprimir hasta {GARMENT_LABEL_MAX} etiquetas por vez.", "error")
         return redirect(request.referrer or url_for("garment_labels"))
     placeholders = ",".join("?" for _ in copies)
-    products = get_db().execute(f"SELECT id,sku,name,item,color,size,color_name,season FROM products WHERE id IN ({placeholders})",
+    products = get_db().execute(f"SELECT id,sku,name,item,color,size,color_name,season,retail_price FROM products WHERE id IN ({placeholders})",
                                 tuple(copies)).fetchall()
     labels, skipped = [], []
     for product in sorted(products, key=lambda p: list(copies).index(p["id"])):
@@ -1160,7 +1326,9 @@ def print_garment_labels():
         except ValueError:
             skipped.append(product["sku"])
             continue
-        labels += [{"product": product, "svg": svg, "digits": barcode_digits(product["sku"])}] * copies[product["id"]]
+        price = product["retail_price"]
+        labels += [{"product": product, "svg": svg, "digits": barcode_digits(product["sku"]),
+                    "price": price, "net": price_without_iva(price)}] * copies[product["id"]]
     if not labels:
         flash("Los códigos seleccionados no se pueden representar en Code 128.", "error")
         return redirect(request.referrer or url_for("garment_labels"))

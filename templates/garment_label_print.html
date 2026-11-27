@@ -15,10 +15,27 @@ body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:0;padding:16px;bac
 .barcode{display:block;width:100%;flex:1;min-height:0;margin-top:calc(var(--k)*.8mm)}
 .sku{text-align:center;font-size:calc(var(--k)*2.2mm);letter-spacing:.3px;line-height:1;margin-top:calc(var(--k)*.4mm)}
 .warn{color:#a00}
+.price{display:flex;justify-content:space-between;align-items:baseline;gap:calc(var(--k)*1mm);line-height:1;margin-top:calc(var(--k)*.6mm);white-space:nowrap}
+.price b{font-size:calc(var(--k)*3mm)}
+.price span{font-size:calc(var(--k)*2.1mm)}
+/* Etiqueta completa 3 × 5 cm */
+.label.full{padding:1.6mm 2mm 1.4mm;font-weight:400}
+.f-name{font-size:2.5mm;line-height:1.1;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f-body{flex:1;min-height:0;display:grid;grid-template-columns:15mm 1fr;gap:1.5mm;margin-top:1.4mm}
+.f-left{display:flex;flex-direction:column;min-width:0;font-size:2.3mm;line-height:1.15;text-transform:uppercase}
+.f-left>div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f-size{margin-top:.8mm;font-size:2.6mm}
+.f-codes{margin-top:auto}
+.f-right{display:flex;flex-direction:column;min-width:0;padding-top:2mm}
+.f-right .barcode{margin-top:0}
+.f-digits{text-align:center;font-size:2.4mm;letter-spacing:.35mm;line-height:1;margin-top:.5mm;white-space:nowrap}
+.f-price{display:flex;justify-content:space-between;align-items:baseline;gap:1.5mm;border-top:.25mm solid #000;margin-top:1mm;padding-top:.8mm;line-height:1;white-space:nowrap}
+.f-price b{font-size:3.4mm}
+.f-price span{font-size:2.3mm}
 @page{size:{{ fmt.width }}mm {{ fmt.height }}mm;margin:0}
 @media print{body{padding:0;background:#fff}.toolbar{display:none}.sheet{display:block}.label{border:0;break-after:page;page-break-after:always}.label:last-child{break-after:auto;page-break-after:auto}}
 </style></head><body>
 <div class="toolbar"><button onclick="window.print()">Imprimir</button><span>{{ labels|length }} etiqueta{% if labels|length != 1 %}s{% endif %} de {{ fmt.name }}. En la impresora elegí ese tamaño de papel, escala 100% y sin márgenes.</span>{% if skipped %}<span class="warn">No se pudieron generar: {{ skipped|join(', ') }}</span>{% endif %}</div>
-<div class="sheet">{% for l in labels %}<div class="label"><div class="top"><div class="info"><div class="item">{{ l.product.item or l.product.sku }}</div><div class="color">{{ l.product.color or '—' }}</div></div>{% if l.product.size %}<div class="size">{{ l.product.size }}</div>{% endif %}</div>{{ l.svg }}<div class="sku">{{ l.product.sku }}</div></div>{% endfor %}</div>
+<div class="sheet">{% for l in labels %}{% if fmt.layout == 'full' %}{% set p = l.product %}<div class="label full"><div class="f-name">{{ p.name or p.item or p.sku }}</div><div class="f-body"><div class="f-left"><div>{{ p.color_name or '' }}</div><div class="f-size">{{ p.size or '' }}</div><div class="f-codes"><div>{{ p.item or '' }}</div><div>{{ p.color or '' }}</div><div>{{ p.season or '' }}</div></div></div><div class="f-right">{{ l.svg }}<div class="f-digits">{{ l.digits }}</div></div></div>{% if l.price %}<div class="f-price"><b>{{ l.price|ars }}</b><span>SIN IVA {{ l.net|ars(2) }}</span></div>{% endif %}</div>{% else %}<div class="label"><div class="top"><div class="info"><div class="item">{{ l.product.item or l.product.sku }}</div><div class="color">{{ l.product.color or '—' }}</div></div>{% if l.product.size %}<div class="size">{{ l.product.size }}</div>{% endif %}</div>{{ l.svg }}<div class="sku">{{ l.product.sku }}</div>{% if l.price %}<div class="price"><b>{{ l.price|ars }}</b><span>s/IVA {{ l.net|ars(2) }}</span></div>{% endif %}</div>{% endif %}{% endfor %}</div>
 <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),300))</script>
 </body></html>

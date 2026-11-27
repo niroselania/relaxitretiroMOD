@@ -197,3 +197,4 @@ label{color:#4d6159}
 
 .rail-wordmark{display:block;height:22px;width:auto;max-width:130px}
 .rail-brand small{margin-top:5px}
+.import-type{border:0;margin:0;padding:0;display:grid;gap:8px}.import-type legend{color:#6b797f;font-size:10px;font-weight:700;margin-bottom:7px;padding:0}.import-option{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:8px;padding:11px 13px;cursor:pointer;font-weight:400}.import-option:has(input:checked){border-color:#80b8a8;background:#f3faf7}.import-option input{width:16px;height:16px;margin:2px 0 0;accent-color:var(--green)}.import-option strong{display:block;font-size:12px;color:#334148}.import-option small{display:block;font-size:10px;color:#8e999d;margin-top:3px;line-height:1.45}.import-site select{max-width:240px}
