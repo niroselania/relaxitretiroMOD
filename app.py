@@ -90,6 +90,7 @@ def init_db():
     # Keep existing local databases usable when new product and site fields are added.
     for table, column, declaration in [
         ("users", "role", "TEXT NOT NULL DEFAULT 'consulta'"),
+        ("users", "site", "TEXT NOT NULL DEFAULT ''"),
         ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
         ("containers", "parent_id", "INTEGER REFERENCES containers(id)"),
         ("containers", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
@@ -116,13 +117,24 @@ def init_db():
     db.execute("UPDATE products SET item=TRIM(item), color=UPPER(TRIM(color)) "
                "WHERE item != TRIM(item) OR color != UPPER(TRIM(color))")
     db.execute("CREATE INDEX IF NOT EXISTS idx_products_finder ON products(item, color, active)")
-    username = os.environ.get("ADMIN_USERNAME", "admin").strip()
+    username = os.environ.get("ADMIN_USERNAME", "RETIRO").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not app.config["SECRET_KEY"] or not password:
         raise RuntimeError("Configurá SECRET_KEY y ADMIN_PASSWORD antes de iniciar el sistema.")
-    if not db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-        db.execute("INSERT INTO users(username, password_hash, role) VALUES (?, ?, 'admin')",
-                   (username, generate_password_hash(password)))
+    # Cada usuario trabaja con un depósito: el antiguo "admin" pasa a ser el usuario RETIRO.
+    if not db.execute("SELECT 1 FROM users WHERE UPPER(username)='RETIRO'").fetchone():
+        db.execute("UPDATE users SET username='RETIRO', site='Retiro' WHERE LOWER(username)='admin'")
+    db.execute("UPDATE users SET site='Retiro' WHERE UPPER(username)='RETIRO' AND site=''")
+    db.execute("UPDATE users SET site='Bariloche' WHERE UPPER(username)='BARILOCHE' AND site=''")
+    db.execute("UPDATE users SET site='Retiro' WHERE site NOT IN ('Retiro','Bariloche','Todos')")
+    if username.lower() == "admin":
+        username = "RETIRO"
+    # El usuario inicial solo se crea en una instalación nueva (o si no queda ningún administrador).
+    if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone() and \
+            not db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+        bootstrap_site = {"RETIRO": "Retiro", "BARILOCHE": "Bariloche"}.get(username.upper(), "Todos")
+        db.execute("INSERT INTO users(username, password_hash, role, site) VALUES (?, ?, 'admin', ?)",
+                   (username, generate_password_hash(password), bootstrap_site))
     db.execute("UPDATE users SET role='admin' WHERE username=?", (username,))
     # Keep the installation recoverable if ADMIN_USERNAME changed after setup.
     # The oldest account is the original owner account in existing installations.
@@ -170,6 +182,46 @@ def admin_for_writes(view):
     return wrapped
 
 
+SITES = ("Bariloche", "Retiro")
+
+
+def user_site():
+    """Depósito del usuario conectado; None si ve todos (perfil "Todos")."""
+    site = session.get("site", "")
+    return site if site in SITES else None
+
+
+def visible_sql(alias="c"):
+    """Contenedores que ve el usuario: los de su depósito más los compartidos
+    (Depósito Virtual y racks de la planilla de stock)."""
+    site = user_site()
+    if site is None:
+        return "1=1", ()
+    return f"({alias}.is_virtual=1 OR {alias}.from_stock_sheet=1 OR {alias}.site=?)", (site,)
+
+
+def own_sql(alias="c", strict=True):
+    """Racks propios del depósito del usuario (sin compartidos). Para un usuario "Todos",
+    strict=False no filtra nada (historial, tablero y exportación completos)."""
+    site = user_site()
+    if site is None:
+        return (f"({alias}.is_virtual=0 AND {alias}.from_stock_sheet=0)", ()) if strict else ("1=1", ())
+    return f"({alias}.is_virtual=0 AND {alias}.from_stock_sheet=0 AND {alias}.site=?)", (site,)
+
+
+def can_see(container):
+    site = user_site()
+    return bool(container) and (site is None or container["is_virtual"] or container["from_stock_sheet"]
+                                or container["site"] == site)
+
+
+def visible_container(db, container_id):
+    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
+    if not can_see(container):
+        abort(404)
+    return container
+
+
 @app.before_request
 def protect_forms():
     if request.method == "POST":
@@ -185,10 +237,11 @@ def refresh_session_role():
     # migration or admin recovery takes effect without requiring a new login.
     user_id = session.get("user_id")
     if user_id:
-        user = get_db().execute("SELECT username, role FROM users WHERE id=?", (user_id,)).fetchone()
+        user = get_db().execute("SELECT username, role, site FROM users WHERE id=?", (user_id,)).fetchone()
         if user:
             session["username"] = user["username"]
             session["role"] = user["role"]
+            session["site"] = user["site"]
         else:
             session.clear()
 
@@ -198,7 +251,7 @@ def inject_template_values():
     if "csrf_token" not in session:
         session["csrf_token"] = secrets.token_urlsafe(24)
     return {"csrf_token": session["csrf_token"], "active_path": request.path,
-            "current_role": session.get("role")}
+            "current_role": session.get("role"), "user_site": user_site()}
 
 
 @app.template_filter("qty")
@@ -225,6 +278,7 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["role"] = user["role"]
+            session["site"] = user["site"]
             session["csrf_token"] = secrets.token_urlsafe(24)
             return redirect(url_for("dashboard"))
         flash("Usuario o contraseña incorrectos.", "error")
@@ -270,7 +324,19 @@ def users_admin():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         role = request.form.get("role", "consulta")
-        if len(username) < 3 or len(username) > 40:
+        site = request.form.get("site", "")
+        if request.form.get("action") == "site":
+            user_id = request.form.get("user_id", type=int)
+            if site not in (*SITES, "Todos") or not user_id:
+                flash("Elegí un depósito válido.", "error")
+            else:
+                db.execute("UPDATE users SET site=? WHERE id=?", (site, user_id))
+                db.commit()
+                flash("Depósito del usuario actualizado.", "success")
+            return redirect(url_for("users_admin"))
+        if site not in (*SITES, "Todos"):
+            flash("Elegí el depósito del usuario.", "error")
+        elif len(username) < 3 or len(username) > 40:
             flash("El usuario debe tener entre 3 y 40 caracteres.", "error")
         elif len(password) < 12:
             flash("La contraseña debe tener al menos 12 caracteres.", "error")
@@ -278,14 +344,14 @@ def users_admin():
             flash("Seleccioná un perfil válido.", "error")
         else:
             try:
-                db.execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
-                           (username, generate_password_hash(password), role))
+                db.execute("INSERT INTO users(username,password_hash,role,site) VALUES(?,?,?,?)",
+                           (username, generate_password_hash(password), role, site))
                 db.commit()
-                flash(f"Usuario {username} creado con perfil {role}.", "success")
+                flash(f"Usuario {username} creado con perfil {role} para {site}.", "success")
                 return redirect(url_for("users_admin"))
             except sqlite3.IntegrityError:
                 flash("Ese nombre de usuario ya existe.", "error")
-    users = db.execute("SELECT id,username,role FROM users ORDER BY username COLLATE NOCASE").fetchall()
+    users = db.execute("SELECT id,username,role,site FROM users ORDER BY username COLLATE NOCASE").fetchall()
     return render_template("users.html", users=users)
 
 
@@ -293,11 +359,17 @@ def users_admin():
 @login_required
 def dashboard():
     db = get_db()
+    own, own_args = own_sql("c")
+    own_f, own_f_args = own_sql("f", strict=False)
+    own_t, own_t_args = own_sql("t", strict=False)
+    move_filter = f"({own_f} OR {own_t})"
+    move_args = (*own_f_args, *own_t_args)
     stats = {
-        "containers": db.execute("SELECT COUNT(*) FROM containers WHERE active=1 AND is_virtual=0").fetchone()[0],
+        "containers": db.execute(f"SELECT COUNT(*) FROM containers c WHERE c.active=1 AND {own}", own_args).fetchone()[0],
         "products": db.execute("SELECT COUNT(*) FROM products").fetchone()[0],
-        "units": db.execute("SELECT COALESCE(SUM(quantity),0) FROM stock").fetchone()[0],
-        "movements": db.execute("SELECT COUNT(*) FROM movements WHERE date(created_at)=date('now','localtime')").fetchone()[0],
+        "units": db.execute(f"SELECT COALESCE(SUM(s.quantity),0) FROM stock s JOIN containers c ON c.id=s.container_id WHERE c.active=1 AND {own}", own_args).fetchone()[0],
+        "movements": db.execute(f"""SELECT COUNT(*) FROM movements m LEFT JOIN containers f ON f.id=m.from_container_id
+          LEFT JOIN containers t ON t.id=m.to_container_id WHERE date(m.created_at)=date('now','localtime') AND {move_filter}""", move_args).fetchone()[0],
     }
     recent = db.execute("""SELECT m.*, p.sku, p.name product,
       CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' WHEN m.from_source='container' THEN 'Retiro manual' ELSE 'Ingreso externo' END from_name,
@@ -305,12 +377,14 @@ def dashboard():
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id
       LEFT JOIN containers t ON t.id=m.to_container_id
-      ORDER BY m.id DESC LIMIT 8""").fetchall()
+      WHERE {move_filter}
+      ORDER BY m.id DESC LIMIT 8""".replace("{move_filter}", move_filter), move_args).fetchall()
     week_rows = {
         row[0]: row[1]
         for row in db.execute(
-            "SELECT date(created_at), COUNT(*) FROM movements "
-            "WHERE date(created_at) >= date('now','localtime','-6 days') GROUP BY 1"
+            "SELECT date(m.created_at), COUNT(*) FROM movements m LEFT JOIN containers f ON f.id=m.from_container_id "
+            "LEFT JOIN containers t ON t.id=m.to_container_id "
+            f"WHERE date(m.created_at) >= date('now','localtime','-6 days') AND {move_filter} GROUP BY 1", move_args
         )
     }
     today = datetime.now().astimezone().date()
@@ -340,12 +414,14 @@ def next_container_code(db):
 @login_required
 def containers():
     q = request.args.get("q", "").strip()
-    rows = get_db().execute("""SELECT c.*, COALESCE(SUM(s.quantity),0) units,
+    visible, visible_args = visible_sql("c")
+    own, own_args = own_sql("c")
+    rows = get_db().execute(f"""SELECT c.*, COALESCE(SUM(s.quantity),0) units,
       COUNT(DISTINCT s.product_id) products_count
       FROM containers c LEFT JOIN stock s ON s.container_id=c.id
-      WHERE c.active=1 AND c.is_virtual=0 AND (?='' OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
-      GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (q, f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
-    parents = get_db().execute("SELECT id,name,code,site FROM containers WHERE active=1 AND is_virtual=0 ORDER BY name COLLATE NOCASE").fetchall()
+      WHERE c.active=1 AND c.is_virtual=0 AND {visible} AND (?='' OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
+      GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (*visible_args, q, f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
+    parents = get_db().execute(f"SELECT id,name,code,site FROM containers c WHERE active=1 AND {own} ORDER BY name COLLATE NOCASE", own_args).fetchall()
     virtual = get_db().execute("SELECT * FROM containers WHERE active=1 AND is_virtual=1 LIMIT 1").fetchone()
     virtual_product_count = 0
     if virtual:
@@ -360,14 +436,14 @@ def containers():
 def create_container():
     name = request.form.get("name", "").strip()
     location = request.form.get("location", "").strip()
-    site = request.form.get("site", "").strip()
+    site = user_site() or request.form.get("site", "").strip()
     parent_id = request.form.get("parent_id", type=int)
     if not name:
         flash("Ingresá un nombre para el contenedor.", "error")
         return redirect(url_for("containers"))
     if parent_id:
         parent = get_db().execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
-        if not parent:
+        if not can_see(parent):
             flash("El contenedor principal ya no está disponible.", "error")
             return redirect(url_for("containers"))
         if parent["is_virtual"]:
@@ -391,7 +467,7 @@ def create_container():
 def create_container_batch():
     prefix = request.form.get("prefix", "").strip()
     location = request.form.get("location", "").strip()
-    site = request.form.get("site", "").strip()
+    site = user_site() or request.form.get("site", "").strip()
     parent_value = request.form.get("parent_id", "")
     parent_id = int(parent_value) if parent_value.isdigit() else None
     try:
@@ -410,7 +486,7 @@ def create_container_batch():
     db = get_db()
     if parent_id:
         parent = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
-        if not parent:
+        if not can_see(parent):
             flash("El contenedor principal ya no está disponible.", "error")
             return redirect(url_for("containers"))
         if parent["is_virtual"]:
@@ -423,7 +499,7 @@ def create_container_batch():
     width = max(len(start_text), len(end_text))
     names = [f"{prefix} {number:0{width}d}" for number in range(start, end + 1)]
     placeholders = ",".join("?" for _ in names)
-    existing = db.execute(f"SELECT name FROM containers WHERE active=1 AND name IN ({placeholders})", names).fetchall()
+    existing = db.execute(f"SELECT name FROM containers WHERE active=1 AND site=? AND name IN ({placeholders})", (site, *names)).fetchall()
     if existing:
         duplicates = ", ".join(row["name"] for row in existing[:5])
         flash(f"No se creó el lote porque ya existen nombres como: {duplicates}.", "error")
@@ -445,9 +521,7 @@ def create_container_batch():
 @login_required
 def container_detail(container_id):
     db = get_db()
-    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
-    if not container:
-        abort(404)
+    container = visible_container(db, container_id)
     products = db.execute("""SELECT p.*,s.quantity FROM stock s JOIN products p ON p.id=s.product_id
       WHERE s.container_id=? ORDER BY p.name COLLATE NOCASE""", (container_id,)).fetchall()
     children = db.execute("""SELECT c.*,COALESCE(SUM(s.quantity),0) units,COUNT(DISTINCT s.product_id) products_count
@@ -458,7 +532,8 @@ def container_detail(container_id):
     for cid in subtree:
         subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
     excluded = ",".join("?" for _ in subtree)
-    move_targets = db.execute(f"SELECT id,name,code,site FROM containers WHERE active=1 AND is_virtual=0 AND id NOT IN ({excluded}) ORDER BY name COLLATE NOCASE", subtree).fetchall()
+    own, own_args = own_sql("containers")
+    move_targets = db.execute(f"SELECT id,name,code,site FROM containers WHERE active=1 AND {own} AND id NOT IN ({excluded}) ORDER BY name COLLATE NOCASE", (*own_args, *subtree)).fetchall()
     return render_template("container_detail.html", container=container, products=products, children=children,
                            parent=parent, move_targets=move_targets)
 
@@ -468,9 +543,7 @@ def container_detail(container_id):
 @admin_required
 def edit_container(container_id):
     db = get_db()
-    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
-    if not container:
-        abort(404)
+    container = visible_container(db, container_id)
     if container["is_virtual"]:
         flash("El Depósito Virtual no se puede editar ni mover.", "error")
         return redirect(url_for("container_detail", container_id=container_id))
@@ -486,13 +559,13 @@ def edit_container(container_id):
     elif parent_id in subtree:
         flash("No podés mover un contenedor dentro de sí mismo o de una de sus cajas.", "error")
     else:
-        parent = db.execute("SELECT id,site FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone() if parent_id else None
-        if parent_id and not parent:
+        parent = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone() if parent_id else None
+        if parent_id and not can_see(parent):
             flash("El contenedor de destino no está disponible.", "error")
         elif parent and parent["is_virtual"]:
             flash("El Depósito Virtual es aislado y no puede contener otros contenedores.", "error")
         else:
-            site = parent["site"] if parent else request.form.get("site", "")
+            site = parent["site"] if parent else (user_site() or request.form.get("site", ""))
             if site not in ("Bariloche", "Retiro"):
                 flash("Elegí Bariloche o Retiro como depósito.", "error")
             else:
@@ -510,6 +583,7 @@ def edit_container(container_id):
 @admin_required
 def remove_container_product(container_id, product_id):
     db = get_db()
+    visible_container(db, container_id)
     row = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (container_id, product_id)).fetchone()
     if not row:
         flash("Ese producto ya no está en el contenedor.", "error")
@@ -527,9 +601,7 @@ def remove_container_product(container_id, product_id):
 @admin_required
 def delete_container(container_id):
     db = get_db()
-    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
-    if not container:
-        abort(404)
+    container = visible_container(db, container_id)
     if container["is_virtual"]:
         flash("El Depósito Virtual protegido no se puede eliminar.", "error")
         return redirect(url_for("containers"))
@@ -555,9 +627,7 @@ def delete_container(container_id):
 @app.route("/contenedores/<int:container_id>/etiqueta.svg")
 @login_required
 def container_label(container_id):
-    container = get_db().execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
-    if not container:
-        abort(404)
+    container = visible_container(get_db(), container_id)
     code128 = barcode.get("code128", container["code"], writer=SVGWriter())
     svg = code128.render({"module_width": 0.28, "module_height": 14, "quiet_zone": 3,
                           "font_size": 10, "text_distance": 2, "write_text": True})
@@ -570,9 +640,7 @@ def container_label(container_id):
 @app.route("/contenedores/<int:container_id>/imprimir")
 @login_required
 def print_container_label(container_id):
-    container = get_db().execute("SELECT * FROM containers WHERE id=?", (container_id,)).fetchone()
-    if not container:
-        abort(404)
+    container = visible_container(get_db(), container_id)
     return render_template("label.html", container=container)
 
 
@@ -585,6 +653,11 @@ def products():
     sites = [site for site in ("Bariloche", "Retiro") if site in requested_sites]
     if not request.args:
         sites = ["Bariloche", "Retiro"]
+    # Un usuario de depósito ve el catálogo completo (compartido) con las ubicaciones de su depósito
+    # y de los contenedores compartidos (planilla de stock).
+    own_site = user_site()
+    if own_site:
+        sites = [own_site]
     db = get_db()
     archived = request.args.get("archivados") == "1"
     page_size = 100
@@ -595,12 +668,12 @@ def products():
         rows = db.execute("""SELECT p.*,p.legacy_units+COALESCE(SUM(s.quantity),0) units,
           COALESCE(GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · '),p.source_location,'') locations
           FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
-          LEFT JOIN containers c ON c.id=s.container_id
+          LEFT JOIN containers c ON c.id=s.container_id AND (? IS NULL OR c.site=? OR c.is_virtual=1 OR c.from_stock_sheet=1)
           WHERE p.active=0 AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ?)
             AND (?='' OR p.sku LIKE ?)
           GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
-          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
-    elif len(sites) == 2 and not q and not code:
+          (own_site,own_site,q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%",page_size+1,offset)).fetchall()
+    elif (len(sites) == 2 or own_site) and not q and not code:
         page_ids = db.execute("SELECT id FROM products WHERE active=1 ORDER BY sku COLLATE NOCASE LIMIT ? OFFSET ?",
                               (page_size + 1, offset)).fetchall()
         prefetched_has_next = len(page_ids) > page_size
@@ -614,12 +687,12 @@ def products():
                   THEN ' · ' || GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') ELSE '' END
                 ELSE COALESCE(GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · '),NULLIF(p.source_location,''),'') END locations
               FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
-              LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site IN ({site_placeholders})
+              LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND (c.site IN ({site_placeholders}) OR c.from_stock_sheet=1)
               WHERE p.active=1 AND p.id IN ({placeholders})
               GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""", (*sites, *ids)).fetchall()
         else:
             rows = []
-    elif len(sites) == 2:
+    elif len(sites) == 2 or own_site:
         placeholders = ",".join("?" for _ in sites)
         rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
           CASE WHEN p.legacy_units>0 THEN 'Pendiente de ubicación (' || p.legacy_units || ')'
@@ -627,7 +700,7 @@ def products():
               THEN ' · ' || GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') ELSE '' END
             ELSE COALESCE(GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · '),NULLIF(p.source_location,''),'') END locations
           FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
-          LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site IN ({placeholders})
+          LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND (c.site IN ({placeholders}) OR c.from_stock_sheet=1)
           WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
@@ -648,6 +721,8 @@ def products():
     has_next = prefetched_has_next if prefetched_has_next is not None else len(rows) > page_size
     rows = rows[:page_size]
     page_args = {"codigo": code, "q": q, "deposito": sites}
+    if own_site:
+        page_args.pop("deposito")
     if archived:
         page_args["archivados"] = "1"
     previous_url = url_for("products", page=page-1, **page_args) if page > 1 else ""
@@ -666,6 +741,7 @@ def size_finder():
     color = request.args.get("color", "").strip().upper()
     rows = []
     searched = bool(request.args)
+    visible, visible_args = visible_sql("c")
     if code:
         if color:
             finder_condition = "((p.item=? AND p.color=?) OR p.sku=?)"
@@ -681,13 +757,13 @@ def size_finder():
           END, ' · ') locations
           FROM products p
           LEFT JOIN stock s ON s.product_id=p.id
-          LEFT JOIN containers c ON c.id=s.container_id
+          LEFT JOIN containers c ON c.id=s.container_id AND {visible}
           WHERE p.active=1 AND {finder_condition}
           GROUP BY p.id
           ORDER BY CASE UPPER(TRIM(p.size))
             WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
             WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
-            p.size COLLATE NOCASE,p.sku""", finder_params).fetchall()
+            p.size COLLATE NOCASE,p.sku""", (*visible_args, *finder_params)).fetchall()
     if request.args.get("formato") == "json":
         return jsonify(results=[dict(row) for row in rows], searched=searched,
                        code=code, color=color)
@@ -762,15 +838,16 @@ def stock_view():
     page = max(1, request.args.get("page", 1, type=int))
     offset = (page - 1) * page_size
     like = f"%{q}%"
+    own, own_args = own_sql("c")
     rows = get_db().execute("""SELECT p.id,p.sku,p.name,p.item,p.color,p.size,p.description,
       SUM(s.quantity) units,
       GROUP_CONCAT(c.id || char(31) || c.name || char(31) || s.quantity, char(30)) locations
       FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id
-      WHERE c.active=1 AND c.is_virtual=0 AND c.from_stock_sheet=0 AND s.quantity>0
+      WHERE c.active=1 AND {own} AND s.quantity>0
         AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ?
              OR p.description LIKE ? OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
-      GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""",
-      (q, like, like, like, like, like, like, like, like, like, page_size + 1, offset)).fetchall()
+      GROUP BY p.id ORDER BY p.sku COLLATE NOCASE LIMIT ? OFFSET ?""".replace("{own}", own),
+      (*own_args, q, like, like, like, like, like, like, like, like, like, page_size + 1, offset)).fetchall()
     has_next = len(rows) > page_size
     products = []
     for row in rows[:page_size]:
@@ -783,7 +860,7 @@ def stock_view():
     if not products and not q:
         db = get_db()
         diagnostics = {
-            "racks": db.execute("SELECT COUNT(*) FROM containers WHERE active=1 AND is_virtual=0 AND from_stock_sheet=0").fetchone()[0],
+            "racks": db.execute(f"SELECT COUNT(*) FROM containers c WHERE c.active=1 AND {own}", own_args).fetchone()[0],
             "virtual_units": db.execute("SELECT COALESCE(SUM(virtual_units),0) FROM products WHERE active=1").fetchone()[0],
         }
     previous_url = url_for("stock_view", q=q, page=page - 1) if page > 1 else ""
@@ -799,15 +876,18 @@ def scan():
     code = request.args.get("codigo", "").strip()
     db = get_db()
     container = db.execute("SELECT * FROM containers WHERE code=? AND active=1", (code,)).fetchone() if code else None
+    if not can_see(container):
+        container = None
     product = db.execute("SELECT * FROM products WHERE sku=? AND active=1", (code,)).fetchone() if code else None
+    visible, visible_args = visible_sql("c")
     container_stock = []
     product_stock = []
     if container:
         container_stock = db.execute("""SELECT p.sku,p.name,s.quantity FROM stock s JOIN products p ON p.id=s.product_id
           WHERE s.container_id=? AND s.quantity>0 ORDER BY p.name COLLATE NOCASE""", (container["id"],)).fetchall()
     if product:
-        product_stock = db.execute("""SELECT c.id,c.name,c.code,c.location,s.quantity FROM stock s JOIN containers c ON c.id=s.container_id
-          WHERE s.product_id=? AND s.quantity>0 ORDER BY c.name COLLATE NOCASE""", (product["id"],)).fetchall()
+        product_stock = db.execute(f"""SELECT c.id,c.name,c.code,c.location,s.quantity FROM stock s JOIN containers c ON c.id=s.container_id
+          WHERE s.product_id=? AND s.quantity>0 AND c.active=1 AND {visible} ORDER BY c.name COLLATE NOCASE""", (product["id"], *visible_args)).fetchall()
     return render_template("scan.html", code=code, container=container, product=product,
                            container_stock=container_stock, product_stock=product_stock)
 
@@ -840,11 +920,11 @@ def movements():
                     raise ValueError("Escaneá o seleccioná un contenedor de destino.")
                 if from_id == to_id:
                     raise ValueError("El origen y el destino deben ser distintos.")
-                source_container = db.execute("SELECT id,is_virtual FROM containers WHERE id=? AND active=1", (from_id,)).fetchone() if from_id else None
-                if from_id and not source_container:
+                source_container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (from_id,)).fetchone() if from_id else None
+                if from_id and not can_see(source_container):
                     raise ValueError("El contenedor de origen ya no está disponible.")
-                destination_container = db.execute("SELECT id,is_virtual FROM containers WHERE id=? AND active=1", (to_id,)).fetchone()
-                if not destination_container:
+                destination_container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (to_id,)).fetchone()
+                if not can_see(destination_container):
                     raise ValueError("El contenedor de destino ya no está disponible.")
                 if destination_container["is_virtual"]:
                     raise ValueError("El Depósito Virtual solo se puede usar como origen PICK.")
@@ -882,14 +962,20 @@ def movements():
                 flash(str(exc) or "No se pudo completar el movimiento.", "error")
         else:
             flash("Usá el flujo de PICK para registrar movimientos por lote.", "error")
+    own_f, own_f_args = own_sql("f", strict=False)
+    own_t, own_t_args = own_sql("t", strict=False)
+    move_filter = f"({own_f} OR {own_t} OR (m.from_container_id IS NULL AND m.to_container_id IS NULL))"
+    move_args = (*own_f_args, *own_t_args)
     rows = db.execute("""SELECT m.*,p.sku,p.name product,
       CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' WHEN m.from_source='container' THEN 'Retiro manual' ELSE 'Ingreso externo' END from_name,
       t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id LEFT JOIN containers t ON t.id=m.to_container_id
-      ORDER BY m.id DESC LIMIT 100""").fetchall()
+      WHERE {move_filter}
+      ORDER BY m.id DESC LIMIT 100""".replace("{move_filter}", move_filter), move_args).fetchall()
     products = db.execute("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
-    containers = db.execute("SELECT * FROM containers WHERE active=1 AND is_virtual=0 ORDER BY name COLLATE NOCASE").fetchall()
+    visible, visible_args = visible_sql("c")
+    containers = db.execute(f"SELECT * FROM containers c WHERE active=1 AND is_virtual=0 AND {visible} ORDER BY name COLLATE NOCASE", visible_args).fetchall()
     virtual_container = db.execute("SELECT * FROM containers WHERE active=1 AND is_virtual=1 LIMIT 1").fetchone()
     product_index = {p["sku"]: {"id": p["id"], "name": p["name"], "sku": p["sku"]} for p in products}
     source_index = {c["code"]: {"id": c["id"], "name": c["name"], "code": c["code"]} for c in containers}
@@ -1166,6 +1252,8 @@ def import_data():
                     site = str(r.get("sucursal") or r.get("deposito") or "").strip().title()
                     if site not in ("Bariloche", "Retiro"):
                         raise ValueError("La sucursal de cada contenedor debe ser Bariloche o Retiro.")
+                    if user_site() and site != user_site():
+                        raise ValueError(f"Tu usuario solo puede importar contenedores de {user_site()}.")
                     db.execute("""INSERT INTO containers(code,name,location,site,created_at) VALUES(?,?,?,?,?)
                       ON CONFLICT(code) DO UPDATE SET name=excluded.name,location=excluded.location,site=excluded.site,active=1""",
                       (str(r["codigo"]).strip(),str(r["nombre"]).strip(),str(r.get("ubicacion") or "").strip(),site,now_text()))
@@ -1225,13 +1313,14 @@ def export_data():
     db = get_db()
     wb = Workbook()
     for index, (name, query) in enumerate([
-        ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers WHERE active=1 ORDER BY code"),
+        ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers c WHERE active=1 AND {own} ORDER BY code"),
         ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones,color_name color_nombre,season temporada,retail_price precio_retail FROM products ORDER BY sku"),
-        ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 ORDER BY c.code,p.sku"),
+        ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 AND {own} ORDER BY c.code,p.sku"),
     ]):
         ws = wb.active if index == 0 else wb.create_sheet()
         ws.title = name
-        rows = db.execute(query).fetchall()
+        own, own_args = own_sql("c", strict=False)
+        rows = db.execute(query.replace("{own}", own), own_args if "{own}" in query else ()).fetchall()
         ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones","color_nombre","temporada","precio_retail"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
         for row in rows:
             ws.append(list(row))

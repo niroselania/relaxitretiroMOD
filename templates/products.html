@@ -1,11 +1,11 @@
 {% extends 'base.html' %}{% block title %}{% if archived %}Productos archivados{% else %}Productos{% endif %}{% endblock %}{% block content %}
-<div class="products-heading"><div><div class="eyebrow">INVENTARIO · BARILOCHE Y RETIRO</div><h1>{% if archived %}Productos archivados{% else %}Productos{% endif %}</h1></div>{% if archived %}<a class="button secondary" href="{{ url_for('products', deposito=['Retiro','Bariloche']) }}">Volver a productos</a>{% else %}<div class="product-heading-actions"><a class="text-link" href="{{ url_for('products', archivados=1) }}">Ver archivados</a>{% if session.get('role') == 'admin' %}<a class="button primary" href="#nuevo-producto">Nuevo producto</a>{% endif %}</div>{% endif %}</div>
+<div class="products-heading"><div><div class="eyebrow">INVENTARIO · {{ (user_site or "Bariloche y Retiro")|upper }}</div><h1>{% if archived %}Productos archivados{% else %}Productos{% endif %}</h1></div>{% if archived %}<a class="button secondary" href="{{ url_for('products', deposito=['Retiro','Bariloche']) }}">Volver a productos</a>{% else %}<div class="product-heading-actions"><a class="text-link" href="{{ url_for('products', archivados=1) }}">Ver archivados</a>{% if session.get('role') == 'admin' %}<a class="button primary" href="#nuevo-producto">Nuevo producto</a>{% endif %}</div>{% endif %}</div>
 <section class="panel product-browser">
   {% if not archived %}<form method="get" class="product-filters">
-    <div class="site-switches" aria-label="Filtrar por depósito">
+    {% if user_site %}<div class="site-switches"><span class="site-option"><span>Depósito {{ user_site }}</span></span></div>{% else %}<div class="site-switches" aria-label="Filtrar por depósito">
       <label class="site-option"><input type="checkbox" name="deposito" value="Retiro" {% if 'Retiro' in sites %}checked{% endif %}><span class="radio-ui"></span><span>Retiro</span></label>
       <label class="site-option"><input type="checkbox" name="deposito" value="Bariloche" {% if 'Bariloche' in sites %}checked{% endif %}><span class="radio-ui"></span><span>Bariloche</span></label>
-    </div>
+    </div>{% endif %}
     <div class="product-searches"><label class="code-search">Buscar Código:<span><input name="codigo" value="{{ code }}" placeholder="Ej: 12345"><button class="button primary" type="submit">Buscar</button></span></label><label class="text-search">Filtrar:<input name="q" value="{{ q }}" placeholder="Nombre, item, color, talle o ubicación"></label></div>
     <button class="filter-submit" type="submit">Aplicar filtros</button>
   </form>{% endif %}

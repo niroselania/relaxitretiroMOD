@@ -5,6 +5,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 ## Funciones incluidas
 
 - Inicio de sesión con perfiles **Administrador** y **Solo consulta**. Los administradores crean usuarios desde **Usuarios**; la contraseña inicial debe tener al menos 12 caracteres.
+- **Usuarios por depósito**: cada usuario tiene un depósito (Retiro, Bariloche o Todos). El usuario `RETIRO` (antes `admin`, conserva su contraseña) ve y carga solo los racks y el stock de Retiro; `BARILOCHE`, solo los de Bariloche. Contenedores, Consultar stock, Productos (ubicaciones), Buscador de talles, Lector, Movimientos, Inicio y Exportar se filtran por el depósito del usuario, y los contenedores nuevos se crean en su depósito. El catálogo de productos, el Depósito Virtual y los racks de la planilla de stock son compartidos. Desde **Usuarios** se crea un usuario eligiendo su depósito y se puede cambiar el depósito de cada usuario.
 - El perfil de consulta puede ver productos, ubicaciones, stock, etiquetas e historial. No puede crear o modificar productos/contendedores, importar planillas ni registrar movimientos; los permisos se validan en el servidor.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Creación por lote de hasta 500 contenedores con prefijo y rango numérico, cada uno con código de barras propio.

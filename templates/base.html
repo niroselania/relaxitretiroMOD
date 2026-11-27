@@ -30,7 +30,7 @@
   </div>
 </aside>
 <div class="main-shell">
-  <header class="topbar"><div class="mobile-brand">Patagonia <small>DEPÓSITO</small></div><div class="topbar-spacer"></div><div class="user-chip"><span class="avatar">{{ session.get('username','U')[:1]|upper }}</span><span>{{ session.get('username') }} · {{ 'Admin' if current_role == 'admin' else 'Consulta' }}</span></div><a class="logout" href="{{ url_for('account') }}">Cuenta</a><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" type="submit">Salir</button></form></header>
+  <header class="topbar"><div class="mobile-brand">Patagonia <small>DEPÓSITO</small></div><div class="topbar-spacer"></div><div class="user-chip"><span class="avatar">{{ session.get('username','U')[:1]|upper }}</span><span>{{ session.get('username') }} · {{ user_site or 'Todos los depósitos' }} · {{ 'Admin' if current_role == 'admin' else 'Consulta' }}</span></div><a class="logout" href="{{ url_for('account') }}">Cuenta</a><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" type="submit">Salir</button></form></header>
   <main class="page-content">
     {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="flash-stack">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
     {% block content %}{% endblock %}
